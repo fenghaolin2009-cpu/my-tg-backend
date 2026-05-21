@@ -6,10 +6,10 @@ import yt_dlp
 import uuid
 import os
 import tempfile
-import re  # 🚀 【核心升级】引入 Python 原生正则表达式模块，用于过滤脏文本
+import re
 
 # 1. 初始化 FastAPI 应用
-app = FastAPI(title="SnapDownloader URL-Cleaner Backend")
+app = FastAPI(title="SnapDownloader V2 Ultra-Robust Backend")
 
 # 2. 开启全量 CORS 跨域配置
 app.add_middleware(
@@ -36,11 +36,10 @@ def cleanup_file(file_path: str):
 
 # 工具函数：利用正则表达式从混杂文本中精准剥离出真正的 http/https 链接
 def utils_extract_clean_url(dirty_text: str) -> str:
-    # 使用你指定的正则表达式，精准匹配以 http:// 或 https:// 开头且不包含空格的连续字符串
     match = re.search(r"https?://[^\s]+", dirty_text)
     if match:
-        return match.group(0)  # 成功提取，返回干净的纯网址
-    return ""  # 未匹配到任何网址，返回空字符串
+        return match.group(0)
+    return ""
 
 
 # 健康检查接口
@@ -49,16 +48,15 @@ def utils_extract_clean_url(dirty_text: str) -> str:
 async def health_check():
     return {
         "status": "ok", 
-        "message": "文本全自动脱水及暂存下载服务正常运行中...",
+        "message": "极强格式容错及优雅风控提示中转下载服务运行中...",
         "active_tasks": len(DOWNLOAD_CACHE)
     }
 
 
-# 4. 智能提取接口（已加入全自动分享文案清洗过滤）
+# 4. 智能提取接口（加入优雅风控提示拦截）
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     try:
-        # 直接读取前端发送的包含大段杂质文案的裸文本请求体
         raw_body = await request.body()
         dirty_input = raw_body.decode("utf-8").strip()
         
@@ -66,17 +64,13 @@ async def extract_stream(request: Request):
         print(f"📥 收到前端交互原始文本:\n{dirty_input}")
         print(f"========================================")
         
-        # 🚀 【核心升级】执行文本脱水过滤，精准捞出纯净 URL
         cleaned_url = utils_extract_clean_url(dirty_input)
         
-        # 安全容错拦截：如果文本里压根找不到网址，直接阻断
         if not cleaned_url:
-            print(f"🚨 过滤失败：该文本中未检测到任何以 http/https 开头的有效视频链接！")
             raise HTTPException(status_code=400, detail="未检测到有效的视频链接，请检查输入的文本")
             
-        print(f"✨ 文本脱水大成功！精准清洗出的纯净网址为: {cleaned_url}")
+        print(f"✨ 文本脱水大成功！纯净网址为: {cleaned_url}")
         
-        # 配置 yt-dlp 快速嗅探参数
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -92,7 +86,6 @@ async def extract_stream(request: Request):
             }
         }
         
-        # 将清洗干净的网址送入 yt-dlp 引擎，此时绝不会再报 valid URL 错误了
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(cleaned_url, download=False)
             
@@ -107,15 +100,13 @@ async def extract_stream(request: Request):
             filesize = info.get('filesize') or info.get('filesize_approx')
             size_str = f"{filesize / (1024 * 1024):.1f} MB" if filesize else "高清原流"
             
-            # 登记原始链接任务（此时存入字典的已经是完美脱水后的干净 URL）
             task_id = str(uuid.uuid4())[:12]
             DOWNLOAD_CACHE[task_id] = {
                 "original_url": cleaned_url
             }
             
-            print(f"🔑 任务登记成功！已将脱水网址绑定至临时 ID: {task_id}")
+            print(f"🔑 任务登记成功！临时 ID: {task_id}")
             
-            # 动态拼接精简的中转下载链接
             base_url = str(request.base_url).rstrip('/')
             proxy_download_url = f"{base_url}/api/v1/download?id={task_id}"
             
@@ -130,14 +121,22 @@ async def extract_stream(request: Request):
             }
             
     except HTTPException:
-        raise  # 400 异常直接抛给前端，不进入下面的 500 崩溃捕获器
+        raise
     except Exception as e:
         error_msg = str(e)
         print(f"❌ 解析服务崩溃，异常原因: {error_msg}")
+        
+        # 🚀 【核心优化一】：捕获并降级抖音风控拦截报错，返回前端清晰直观的 400 温馨中文原理解释
+        if "cookies" in error_msg.lower():
+            raise HTTPException(
+                status_code=400, 
+                detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。"
+            )
+            
         raise HTTPException(status_code=500, detail=f"解析失败: {error_msg}")
 
 
-# 5. 同步中转下载接口
+# 5. 同步中转下载接口（加入 B 站基础单文件格式容错）
 @app.get("/api/v1/download")
 def proxy_download(id: str, background_tasks: BackgroundTasks):
     if not id:
@@ -146,7 +145,6 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
     if id not in DOWNLOAD_CACHE:
         raise HTTPException(status_code=404, detail="下载任务已失效或服务器已重启，请回前端重新解析")
         
-    # 取出早已在 extract 阶段清洗干净的纯净原始网址
     original_url = DOWNLOAD_CACHE[id]["original_url"]
     print(f"🚀 [物理落盘启动] 正在调用已清洗网址启动下载: {original_url}")
     
@@ -156,7 +154,9 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
     
     ydl_opts = {
         'outtmpl': file_path,
-        'format': 'best',         
+        # 🚀 【核心优化二】：强制指定匿名、最基础、无需登录即可获取的单文件格式
+        # 告诉引擎不要盲目挑剔画质，优先选择已经封装好的 mp4 单文件，完美平替并治愈 B 站的 Requested format 崩溃报错
+        'format': 'best[ext=mp4]/best/mp4',         
         'quiet': True,
         'no_warnings': True,
         'http_headers': {
@@ -174,7 +174,6 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         print(f"🟢 物理暂存大成功！文件大小: {file_size_mb:.2f} MB，路径: {file_path}")
         
-        # 注册“阅后即焚”后台清理任务
         background_tasks.add_task(cleanup_file, file_path)
         
         return FileResponse(
@@ -189,4 +188,12 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
         if os.path.exists(file_path):
             try: os.remove(file_path)
             except: pass
+            
+        # 🚀 【核心优化三】：若在中转下载环节才触发 Cookies 封锁，同样优雅降级弹出温馨中文提示
+        if "cookies" in error_msg.lower():
+            raise HTTPException(
+                status_code=400, 
+                detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。"
+            )
+            
         raise HTTPException(status_code=500, detail=f"后端实体暂存失败: {error_msg}")
