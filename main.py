@@ -1,10 +1,13 @@
 # 文件名: main.py
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from urllib.parse import quote
 import yt_dlp
+import httpx
 
 # 1. 初始化 FastAPI 应用
-app = FastAPI(title="SnapDownloader Production Backend")
+app = FastAPI(title="SnapDownloader Advanced Proxy Backend")
 
 # 2. 开启全量 CORS 跨域配置
 app.add_middleware(
@@ -19,9 +22,10 @@ app.add_middleware(
 @app.get("/")
 @app.get("/api/v1/health")
 async def health_check():
-    return {"status": "ok", "message": "视频流解析后端服务正在运行中..."}
+    return {"status": "ok", "message": "视频流解析及中转下载服务正在运行中..."}
 
-# 4. 真实原流提取接口
+
+# 4. 真实原流提取接口（已修改：返回经过后端中转的下载链接）
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     try:
@@ -36,25 +40,15 @@ async def extract_stream(request: Request):
         if not url_input:
             raise HTTPException(status_code=400, detail="输入的视频网址不能为空")
             
-        # 配置 yt-dlp 核心参数（加入了针对 YouTube 的常规反爬拦截与防封锁伪装）
+        # 配置 yt-dlp 核心参数（保留原有的 YouTube 常规防拦截配置）
         ydl_opts = {
-            'quiet': True,            # 禁止打印多余的运行时调试日志
-            'no_warnings': True,      # 忽略非致命警告
-            'skip_download': True,    # 核心：只抓取元数据，绝不下载视频到服务器本地
-            'extract_flat': False,    # 深度提取流媒体真实的直链地址
-            
-            # 【防封锁升级 1】注入标准桌面端浏览器请求头，防止被识别为无头脚本
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'extract_flat': False,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
             },
-            
-            # 【防封锁升级 2】核心突破口：伪装 YouTube 访问客户端
-            # 强制让 yt-dlp 放弃使用默认容易被拦截的网页客户端，转而模拟 ios、android 手机端和网页内嵌播放器
-            # 这通常能绕过绝大多数对云服务器机房 IP 实施的 "Sign in to confirm you're not a bot" 限制
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'android', 'web_embedded']
@@ -63,51 +57,90 @@ async def extract_stream(request: Request):
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # 开始调用库进行真实网页嗅探与解析
             info = ydl.extract_info(url_input, download=False)
             
-            # 1. 提取真实视频标题
             title = info.get('title', '未命名原流视频')
             
-            # 2. 提取最高清封面图网址
             cover = info.get('thumbnail')
             if not cover and info.get('thumbnails'):
-                cover = info['thumbnails'][-1].get('url')  # 尝试获取列表中分辨率最高的封面
+                cover = info['thumbnails'][-1].get('url')
             if not cover:
-                cover = "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=500"  # 兜底默认图
+                cover = "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=500"
                 
-            # 3. 提取真实的视频原流直链下载链接
             video_url = info.get('url')
             if not video_url and info.get('formats'):
-                # 如果外层没有直接提供 url，则去 formats 格式列表中筛选出有效的直链
                 valid_formats = [f for f in info['formats'] if f.get('url')]
                 if valid_formats:
-                    # 过滤并尝试选择同时包含音频和视频的完整流（或者排序最后的优质流）
                     video_url = valid_formats[-1].get('url')
                     
             if not video_url:
                 raise Exception("无法从该页面中提取出有效的原音频/视频无水印直链地址")
                 
-            # 4. 计算或预估真实文件大小
             filesize = info.get('filesize') or info.get('filesize_approx')
             if filesize:
                 size_str = f"{filesize / (1024 * 1024):.1f} MB"
             else:
                 size_str = "高清原流"
                 
-            # 5. 严格返回完全适配前端渲染组件的 JSON 数据结构
+            # --- 【核心修改点】智能化动态拼接后端代理下载链接 ---
+            # 1. 自动获取当前后端的根域名（不论是 localhost 还是 Render 域名都会自动适配）
+            base_url = str(request.base_url).rstrip('/')
+            # 2. 对复杂的 CDN 真实网址进行安全编码，防止 CDN 网址内部的 &、? 符号搞乱链接结构
+            encoded_video_url = quote(video_url, safe='')
+            # 3. 拼接成指向我们自己后端 /api/v1/download 接口的专享中转链接
+            proxy_download_url = f"{base_url}/api/v1/download?url={encoded_video_url}"
+            
             return {
                 "type": "video",
                 "title": title,
                 "size": size_str,
                 "cover": cover,
                 "actions": [
-                    { "type": "primary", "label": "🟢 高速无损下载", "url": video_url }
+                    { "type": "primary", "label": "🟢 高速无损下载", "url": proxy_download_url }
                 ]
             }
             
     except Exception as e:
         error_msg = str(e)
         print(f"❌ 解析服务崩溃，异常原因: {error_msg}")
-        # 发生错误时拦截并返回 500 状态码，透传错误信息，完美触发前端的异常弹窗拦截组件
         raise HTTPException(status_code=500, detail=f"解析失败: {error_msg}")
+
+
+# 5. 新增：反向代理流式中转下载接口（解决 TikTok 等防盗链 404 问题）
+@app.get("/api/v1/download")
+async def proxy_download(url: str):
+    if not url:
+        raise HTTPException(status_code=400, detail="缺少必要的 url 参数")
+        
+    print(f"📥 后端正在流式中转下载 CDN 资源: {url[:60]}...")
+    
+    # 为请求 TikTok/小红书等 CDN 加上常规反爬伪装请求头
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity',
+    }
+    
+    # 创建一个实时读取二进制数据流的生成器
+    async def stream_generator():
+        # follow_redirects=True 允许自动追踪 CDN 内部的重定向跳转
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            try:
+                async with client.stream("GET", url, headers=headers) as response:
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=response.status_code, detail="CDN 资源请求失败，请稍后重试")
+                    
+                    # 每次抓取 64KB 的视频碎片，实时发送给前端浏览器
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        yield chunk
+            except Exception as e:
+                print(f"❌ 中转流式下载中途发生断开或异常: {e}")
+                
+    # 强制让前端浏览器弹出“保存文件”的高速无损下载框
+    return StreamingResponse(
+        stream_generator(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": "attachment; filename=video.mp4"
+        }
+    )
