@@ -9,7 +9,7 @@ import tempfile
 import re
 
 # 1. 初始化 FastAPI 应用
-app = FastAPI(title="SnapDownloader V2 Ultra-Robust Backend")
+app = FastAPI(title="SnapDownloader V3 Full-Guard Backend")
 
 # 2. 开启全量 CORS 跨域配置
 app.add_middleware(
@@ -34,7 +34,7 @@ def cleanup_file(file_path: str):
         print(f"❌ [阅后即焚] 清理临时文件失败: {cleanup_err}")
 
 
-# 工具函数：利用正则表达式从混杂文本中精准剥离出真正的 http/https 链接
+# 工具函数：从混杂文本中精准剥离出真正的网址
 def utils_extract_clean_url(dirty_text: str) -> str:
     match = re.search(r"https?://[^\s]+", dirty_text)
     if match:
@@ -48,12 +48,12 @@ def utils_extract_clean_url(dirty_text: str) -> str:
 async def health_check():
     return {
         "status": "ok", 
-        "message": "极强格式容错及优雅风控提示中转下载服务运行中...",
+        "message": "全链路大厂风控拦截中转下载服务运行中...",
         "active_tasks": len(DOWNLOAD_CACHE)
     }
 
 
-# 4. 智能提取接口（加入优雅风控提示拦截）
+# 4. 智能提取接口
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     try:
@@ -123,20 +123,37 @@ async def extract_stream(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        print(f"❌ 解析服务崩溃，异常原因: {error_msg}")
+        # 🚀 【全链路防御：解析接口异常拦截块】
+        error_msg_raw = str(e)
+        error_msg_lower = error_msg_raw.lower()  # 统一转化为全小写，确保地狱级强悍容错
+        print(f"❌ 解析服务触发捕获，异常原因: {error_msg_raw}")
         
-        # 🚀 【核心优化一】：捕获并降级抖音风控拦截报错，返回前端清晰直观的 400 温馨中文原理解释
-        if "cookies" in error_msg.lower():
+        # 1. 拦截抖音/国内风控
+        if "cookies" in error_msg_lower:
             raise HTTPException(
                 status_code=400, 
                 detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。"
             )
+        
+        # 2. 拦截推特 (X) 风控
+        if "twitter" in error_msg_lower and "no video" in error_msg_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="🔒 推特 (X) 官方触发了海外公共机房 IP 匿名访问限制，请稍后重试。"
+            )
             
-        raise HTTPException(status_code=500, detail=f"解析失败: {error_msg}")
+        # 3. 拦截 Instagram 风控
+        if "instagram" in error_msg_lower and "no video" in error_msg_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。"
+            )
+            
+        # 其他未定义未知错误，依旧抛出 500 系统崩溃
+        raise HTTPException(status_code=500, detail=f"解析失败: {error_msg_raw}")
 
 
-# 5. 同步中转下载接口（加入 B 站基础单文件格式容错）
+# 5. 同步中转下载接口
 @app.get("/api/v1/download")
 def proxy_download(id: str, background_tasks: BackgroundTasks):
     if not id:
@@ -154,8 +171,6 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
     
     ydl_opts = {
         'outtmpl': file_path,
-        # 🚀 【核心优化二】：强制指定匿名、最基础、无需登录即可获取的单文件格式
-        # 告诉引擎不要盲目挑剔画质，优先选择已经封装好的 mp4 单文件，完美平替并治愈 B 站的 Requested format 崩溃报错
         'format': 'best[ext=mp4]/best/mp4',         
         'quiet': True,
         'no_warnings': True,
@@ -183,17 +198,36 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
         )
         
     except Exception as e:
-        error_msg = str(e)
-        print(f"🚨 服务器本地中转发生致命崩溃: {error_msg}")
+        # 出错兜底：如果有残留的半成品残渣文件，顺手清理掉防止塞满硬盘
         if os.path.exists(file_path):
             try: os.remove(file_path)
             except: pass
             
-        # 🚀 【核心优化三】：若在中转下载环节才触发 Cookies 封锁，同样优雅降级弹出温馨中文提示
-        if "cookies" in error_msg.lower():
+        # 🚀 【全链路防御：中转下载接口异常拦截块】
+        # 将相同的防风控拦截逻辑同步复制一份到此，杜绝任何阶段的 500 崩溃
+        error_msg_raw = str(e)
+        error_msg_lower = error_msg_raw.lower()  # 同样全小写体检
+        print(f"🚨 服务器本地中转发生崩溃: {error_msg_raw}")
+        
+        # 1. 拦截抖音/国内风控
+        if "cookies" in error_msg_lower:
             raise HTTPException(
                 status_code=400, 
                 detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。"
             )
             
-        raise HTTPException(status_code=500, detail=f"后端实体暂存失败: {error_msg}")
+        # 2. 拦截推特 (X) 风控
+        if "twitter" in error_msg_lower and "no video" in error_msg_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="🔒 推特 (X) 官方触发了海外公共机房 IP 匿名访问限制，请稍后重试。"
+            )
+            
+        # 3. 拦截 Instagram 风控
+        if "instagram" in error_msg_lower and "no video" in error_msg_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。"
+            )
+            
+        raise HTTPException(status_code=500, detail=f"后端实体暂存失败: {error_msg_raw}")
