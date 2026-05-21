@@ -7,7 +7,7 @@ import yt_dlp
 import httpx
 
 # 1. 初始化 FastAPI 应用
-app = FastAPI(title="SnapDownloader Advanced Proxy Backend")
+app = FastAPI(title="SnapDownloader Ultra Robust Backend")
 
 # 2. 开启全量 CORS 跨域配置
 app.add_middleware(
@@ -22,10 +22,10 @@ app.add_middleware(
 @app.get("/")
 @app.get("/api/v1/health")
 async def health_check():
-    return {"status": "ok", "message": "视频流解析及中转下载服务正在运行中..."}
+    return {"status": "ok", "message": "高容错中转下载服务正在全量防御运行中..."}
 
 
-# 4. 真实原流提取接口（已修改：返回经过后端中转的下载链接）
+# 4. 真实原流提取接口
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     try:
@@ -40,7 +40,7 @@ async def extract_stream(request: Request):
         if not url_input:
             raise HTTPException(status_code=400, detail="输入的视频网址不能为空")
             
-        # 配置 yt-dlp 核心参数（保留原有的 YouTube 常规防拦截配置）
+        # 配置 yt-dlp 核心参数
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -82,12 +82,9 @@ async def extract_stream(request: Request):
             else:
                 size_str = "高清原流"
                 
-            # --- 【核心修改点】智能化动态拼接后端代理下载链接 ---
-            # 1. 自动获取当前后端的根域名（不论是 localhost 还是 Render 域名都会自动适配）
+            # 动态拼接后端代理下载链接
             base_url = str(request.base_url).rstrip('/')
-            # 2. 对复杂的 CDN 真实网址进行安全编码，防止 CDN 网址内部的 &、? 符号搞乱链接结构
             encoded_video_url = quote(video_url, safe='')
-            # 3. 拼接成指向我们自己后端 /api/v1/download 接口的专享中转链接
             proxy_download_url = f"{base_url}/api/v1/download?url={encoded_video_url}"
             
             return {
@@ -106,37 +103,68 @@ async def extract_stream(request: Request):
         raise HTTPException(status_code=500, detail=f"解析失败: {error_msg}")
 
 
-# 5. 新增：反向代理流式中转下载接口（解决 TikTok 等防盗链 404 问题）
+# 5. 地狱级容错：反向代理流式中转下载接口
 @app.get("/api/v1/download")
 async def proxy_download(url: str):
     if not url:
         raise HTTPException(status_code=400, detail="缺少必要的 url 参数")
         
-    print(f"📥 后端正在流式中转下载 CDN 资源: {url[:60]}...")
+    print(f"📥 后端接管网络流，开始请求真实 CDN: {url[:60]}...")
     
-    # 为请求 TikTok/小红书等 CDN 加上常规反爬伪装请求头
+    # 【核心升级 1】注入完美伪装头，全面攻破 TikTok 针对机房 IP 的防盗链保护
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://www.tiktok.com/',   # 必须伪装成 TikTok 内部来源
         'Accept': '*/*',
-        'Accept-Encoding': 'identity',
+        'Accept-Encoding': 'identity',           # 确保 CDN 传输原始文件，禁止压缩破坏
     }
     
-    # 创建一个实时读取二进制数据流的生成器
+    # 显式手动声明客户端，接管连接生命周期，彻底杜绝因为代码 return 导致提前闭合产生 0B 的 Bug
+    client = httpx.AsyncClient(follow_redirects=True)
+    try:
+        # 构建流式长连接请求
+        req = client.build_request("GET", url, headers=headers)
+        response = await client.send(req, stream=True)
+        
+        # 【核心升级 2】前置状态码拦截。在数据发送给前端之前进行强力体检
+        if response.status_code != 200:
+            print(f"🚨 CDN 握手失败！对方返回状态码: {response.status_code}。正在强制阻断空流！")
+            # 发现异常立即闭合，绝不拖泥带水
+            await response.aclose()
+            await client.aclose()
+            # 直接抛出标准的 HTTP 异常错误，让前端能够精准捕捉到拦截原因
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"TikTok CDN 拒绝了中转请求，状态码: {response.status_code}。请尝试重新解析新链接。"
+            )
+            
+    except HTTPException:
+        # 如果是状态码检查不通过的 HTTPException，直接往上抛出，让前端弹窗
+        raise
+    except Exception as network_err:
+        # 捕捉其他网络握手超时或连接失败等致命故障
+        print(f"🚨 与目标 CDN 建立连接时发生网络层崩溃: {network_err}")
+        await client.aclose()
+        raise HTTPException(status_code=500, detail=f"后端中转握手失败: {str(network_err)}")
+
+    print(f"✅ CDN 验证通过 (HTTP 200 OK)，开始流式安全搬运无损字节流...")
+
+    # 【核心升级 3】确保流式迭代器正确闭合的生成器函数
     async def stream_generator():
-        # follow_redirects=True 允许自动追踪 CDN 内部的重定向跳转
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            try:
-                async with client.stream("GET", url, headers=headers) as response:
-                    if response.status_code != 200:
-                        raise HTTPException(status_code=response.status_code, detail="CDN 资源请求失败，请稍后重试")
-                    
-                    # 每次抓取 64KB 的视频碎片，实时发送给前端浏览器
-                    async for chunk in response.aiter_bytes(chunk_size=65536):
-                        yield chunk
-            except Exception as e:
-                print(f"❌ 中转流式下载中途发生断开或异常: {e}")
-                
-    # 强制让前端浏览器弹出“保存文件”的高速无损下载框
+        try:
+            # 持续从小块中实时读取，稳稳当当地输送视频流碎片
+            async for chunk in response.aiter_bytes(chunk_size=65536):
+                yield chunk
+        except Exception as stream_err:
+            print(f"⚠️ 搬运字节流时，前端中途掐断或连接异常: {stream_err}")
+        finally:
+            # 无论是前端下载完成、中途主动取消、还是网络发生中断，
+            # 最终（finally）都百分之百强制关闭底层的 response 和 client 连接，释放内存资源
+            await response.aclose()
+            await client.aclose()
+            print(f"🔒 [安全闭合] 该长连接对应的所有中转网络流已全量释放回收。")
+
+    # 4. 强制触发浏览器弹出保存文件框，拒绝在线播放
     return StreamingResponse(
         stream_generator(),
         media_type="video/mp4",
