@@ -6,16 +6,16 @@ import yt_dlp
 # 1. 初始化 FastAPI 应用
 app = FastAPI(title="SnapDownloader Production Backend")
 
-# 2. 开启全量 CORS 跨域配置，允许任何地方的前端进行跨域访问
+# 2. 开启全量 CORS 跨域配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # 允许所有域名跨域访问
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],          # 允许所有请求方法 (POST, GET 等)
-    allow_headers=["*"],          # 允许所有请求头
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# 3. 健康检查接口（方便 Render 监控检查服务状态）
+# 3. 健康检查接口
 @app.get("/")
 @app.get("/api/v1/health")
 async def health_check():
@@ -25,11 +25,10 @@ async def health_check():
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     try:
-        # 核心逻辑：直接读取前端发送的裸文本（text/plain）请求体
+        # 直接读取前端发送的裸文本（text/plain）请求体
         raw_body = await request.body()
         url_input = raw_body.decode("utf-8").strip()
         
-        # 控制台打印记录，方便调试查看
         print(f"========================================")
         print(f"📡 收到前端裸文本解析请求: {url_input}")
         print(f"========================================")
@@ -37,12 +36,30 @@ async def extract_stream(request: Request):
         if not url_input:
             raise HTTPException(status_code=400, detail="输入的视频网址不能为空")
             
-        # 配置 yt-dlp 核心参数
+        # 配置 yt-dlp 核心参数（加入了针对 YouTube 的常规反爬拦截与防封锁伪装）
         ydl_opts = {
             'quiet': True,            # 禁止打印多余的运行时调试日志
             'no_warnings': True,      # 忽略非致命警告
-            'skip_download': True,    # 核心：只抓取元数据，绝不下载视频到服务器本地，保护硬盘
+            'skip_download': True,    # 核心：只抓取元数据，绝不下载视频到服务器本地
             'extract_flat': False,    # 深度提取流媒体真实的直链地址
+            
+            # 【防封锁升级 1】注入标准桌面端浏览器请求头，防止被识别为无头脚本
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+            },
+            
+            # 【防封锁升级 2】核心突破口：伪装 YouTube 访问客户端
+            # 强制让 yt-dlp 放弃使用默认容易被拦截的网页客户端，转而模拟 ios、android 手机端和网页内嵌播放器
+            # 这通常能绕过绝大多数对云服务器机房 IP 实施的 "Sign in to confirm you're not a bot" 限制
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web_embedded']
+                }
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -65,7 +82,7 @@ async def extract_stream(request: Request):
                 # 如果外层没有直接提供 url，则去 formats 格式列表中筛选出有效的直链
                 valid_formats = [f for f in info['formats'] if f.get('url')]
                 if valid_formats:
-                    # 通常列表最后的格式清晰度与完整度最高
+                    # 过滤并尝试选择同时包含音频和视频的完整流（或者排序最后的优质流）
                     video_url = valid_formats[-1].get('url')
                     
             if not video_url:
