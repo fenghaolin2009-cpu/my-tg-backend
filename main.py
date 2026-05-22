@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 import httpx
 import yt_dlp
 
-# --- 全局特征过滤与静态映射查表配置 ---
+# --- 全局特征过滤与静态映射配置 ---
 BLOCKED_URL_PATTERNS: List[str] = [".m3u8", "manifest"]
 
 COOKIE_MAPPING: Dict[str, str] = {
@@ -32,13 +32,13 @@ REFERER_MAPPING: Dict[str, str] = {
     "twimg.com": "https://x.com/"
 }
 
-# --- 模块顶级作用域工具函数 (优化重编译损耗) ---
+# --- 模块顶级作用域工具函数 ---
 def clean_progressive_url(raw_url: str) -> str:
     """过滤包含切片特征的非实体直链"""
     return "" if not raw_url or any(x in raw_url.lower() for x in BLOCKED_URL_PATTERNS) else raw_url
 
 def resolve_pure_mp4_url(item_data: Dict[str, Any]) -> str:
-    """从底层媒体数据集中检索并提取纯净的实体 MP4 直链"""
+    """从媒体数据集中提取纯净的实体 MP4 直链"""
     if direct := clean_progressive_url(item_data.get('url', '')):
         return direct
     
@@ -62,7 +62,7 @@ def collect_thumbnails_safe(
     yt_dlp_images: List[Dict[str, str]], 
     seen_yt_imgs: set
 ) -> None:
-    """物理修正运行期死锁：通过标准强类型声明接收真实 set 实例"""
+    """过滤提取缩略图列表中属于特定平台特征的独立图片资产"""
     for t in item_data.get('thumbnails', []):
         if (t_url := t.get('url', '')) and any(k in t_url for k in ['pbs.twimg.com/media/', 'twimg.com/media/', 'instagram.com/p/']):
             if t_url not in seen_yt_imgs and not any(t_url in m['url'] for m in media_list):
@@ -70,12 +70,12 @@ def collect_thumbnails_safe(
                 yt_dlp_images.append({"type": "image", "url": t_url})
 
 def utils_extract_clean_url(dirty_text: str) -> str:
-    """提取字符串口令中的合法网际请求网址"""
+    """提取字符串口令中的标准网际请求链接"""
     match = re.search(r"https?://[^\s]+", dirty_text)
     return match.group(0) if match else ""
 
 def utils_create_temp_cookie_file(url: str) -> str:
-    """基于环境变量静态映射动态生成本地短期验证凭证"""
+    """基于环境变量映射关系动态创建本地临时验证凭证文件"""
     env_key = next((v for k, v in COOKIE_MAPPING.items() if k in url.lower()), "")
     cookie_text = os.getenv(env_key, "") if env_key else ""
     if cookie_text.strip():
@@ -89,7 +89,7 @@ def utils_create_temp_cookie_file(url: str) -> str:
     return ""
 
 def utils_safe_remove_cookie_file(cookie_path: str) -> None:
-    """销毁本地临时生成的鉴权凭证文件空间"""
+    """销毁本地临时生成的阅后即焚凭证文件空间"""
     if cookie_path and os.path.exists(cookie_path):
         try:
             os.remove(cookie_path)
@@ -98,11 +98,11 @@ def utils_safe_remove_cookie_file(cookie_path: str) -> None:
             print(f"❌ 销毁临时 Cookie 失败: {e}")
 
 def sync_yt_dlp_extract(target_url: str, options: Dict[str, Any]) -> Dict[str, Any]:
-    """线程池独立子线程中执行的同步阻塞网络 I/O 提取单元"""
+    """线程池独立子线程中执行的同步网络阻塞媒体嗅探单元"""
     with yt_dlp.YoutubeDL(options) as ydl:
         return ydl.extract_info(target_url, download=False)
 
-# --- 异步全局连接池生命周期托管框架 ---
+# --- 全局高性能连接池生命周期托管 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 初始化应用全局唯一的异步非阻塞 HTTP 客户端连接池
@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="SnapDownloader Pure-Link Anti-M3U8 Backend", lifespan=lifespan)
 
-# 通配符 Origins 下禁止开启 allow_credentials，保障服务平稳启动
+# 允许 Origins 为 "*" 通配符时，allow_credentials 必须强制关闭，防止底层安全机制熔断冲突
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -132,7 +132,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
     current_cookie_path: str = ""
     process: Optional[asyncio.subprocess.Process] = None
     try:
-        # 拦截大流量垃圾包投毒 DoS 攻击：物理拦截线卡死 2KB 限制
+        # 拦截大流量垃圾包 DoS 攻击：拦截线硬性卡死 2KB 限制
         body_bytes = await request.body()
         if len(body_bytes) > 2048:
             raise HTTPException(status_code=413, detail="请求体过大")
@@ -143,7 +143,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
         if not cleaned_url or not cleaned_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="未检测到合法的 http:// 或 https:// 视频或图集链接")
 
-        # 域名正则洗白：不区分大小写地将混合大小写 X 域名规范规整为标准 twitter.com
+        # 域名正则洗白器：不区分大小写地将混合大小写 X 域名规范规整为标准 twitter.com
         if re.search(r"x\.com", cleaned_url, flags=re.IGNORECASE):
             cleaned_url = re.sub(r"x\.com", "twitter.com", cleaned_url, flags=re.IGNORECASE)
             print(f"🔄 [域名洗白] 转换混合大小写 X 域名特征为标准 twitter.com")
@@ -176,7 +176,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
                             media_list.append({"type": "video" if is_video else "image", "url": c})
                 print(f"🎯 [阶段一完成] 异步管道内核成功捕获到 {len(media_list)} 个原始资产节点")
             except asyncio.TimeoutError:
-                # 操作系统底层熔断：强制杀掉并回收超时挂起的子进程，防止僵尸进程泄露
+                # 操作系统底层熔断：强制回收超时挂起的子进程，断绝进程树泄漏
                 print("🚨 [安全熔断] gallery-dl 进程超时，强行执行系统级物理回收。")
                 if process and process.returncode is None:
                     process.kill()
@@ -208,7 +208,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
             if current_cookie_path: ydl_opts['cookiefile'] = current_cookie_path
 
             try:
-                # 隔离执行：将同步网络长阻塞 I/O 托管至后台子线程，保护主事件循环速率
+                # 隔离执行：将同步网络长阻塞 I/O 托管至后台独立子线程，保护主事件循环主线程速率
                 info = await asyncio.to_thread(sync_yt_dlp_extract, cleaned_url, ydl_opts)
 
                 yt_dlp_images: List[Dict[str, str]] = []
@@ -224,7 +224,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
                     if v_url := resolve_pure_mp4_url(info): yt_dlp_videos.append({"type": "video", "url": v_url})
                     collect_thumbnails_safe(info, media_list, yt_dlp_images, seen_yt_imgs)
 
-                # 智能交叉去重合并算法：实现最高画质重构并具备刚性历史遗留视频兜底逻辑
+                # 智能交叉去重合并算法：选取最高画质重构并完好留存第一阶段兜底视频阵线
                 retained_images = [m for m in media_list if m["type"] == "image"]
                 gallery_videos = [m for m in media_list if m["type"] == "video"]
                 final_videos = yt_dlp_videos if yt_dlp_videos else gallery_videos
@@ -281,7 +281,7 @@ async def proxy_download(url: str, request: Request, background_tasks: Backgroun
     if not url:
         raise HTTPException(status_code=400, detail="缺少必要的 url 参数")
 
-    # 全量防御 SSRF 攻击漏洞：对传参的主机域名实施强制断裂判定，阻断敏感内网及元数据探测访问
+    # 全量防御 SSRF 攻击漏洞：对传参的主机域名实施限制判定，彻底阻断敏感内网及元数据探测访问
     try:
         parsed_url = urlparse(url)
         hostname = parsed_url.hostname
@@ -295,7 +295,7 @@ async def proxy_download(url: str, request: Request, background_tasks: Backgroun
     except Exception:
         raise HTTPException(status_code=400, detail="网络请求解析格式错误")
 
-    # 静态字典查表，提取反盗链 Referer 伪装地址
+    # 查表法单行提取静态字典，完成反盗链 Referer 伪装
     referer = next((v for k, v in REFERER_MAPPING.items() if k in url.lower()), "https://google.com")
     headers: Dict[str, str] = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": referer}
 
@@ -303,12 +303,13 @@ async def proxy_download(url: str, request: Request, background_tasks: Backgroun
         headers["Range"] = client_range
         print(f"🚀 [Async Range] 成功透传前端分块头: {client_range}")
 
-    # 调用全局常驻的唯一复用流异步 HTTP 客户端连接池
+    # 调用全局生命周期托管框架中注册的常驻唯一异步客户端连接池
     client: httpx.AsyncClient = request.app.state.client
     response: Optional[httpx.Response] = None
     try:
-        req = client.build_request("GET", url, headers=headers)
-        response = await client.send(req, stream=True, timeout=30.0)
+        # 修正参数位置：将 timeout 显式移至 build_request 内部，消除 send 阶段的 TypeError
+        req = client.build_request("GET", url, headers=headers, timeout=30.0)
+        response = await client.send(req, stream=True)
 
         if response.status_code not in [200, 206]:
             await response.aclose()
@@ -323,7 +324,7 @@ async def proxy_download(url: str, request: Request, background_tasks: Backgroun
             if h in response.headers: 
                 out_headers[h] = response.headers[h]
 
-        # 完美生命周期闭环：注册进 BackgroundTasks，在长连接数据被完全消费搬运后秒级关闭长连接
+        # 完美生命周期闭环：注册进 BackgroundTasks 延迟任务，在长连接数据被完全消费搬运后秒级关闭长连接
         background_tasks.add_task(response.aclose)
         print("🔒 [后台流注销就绪] 异步传输生命周期已注册到 BackgroundTasks，保障物理自销毁路径。")
 
@@ -338,7 +339,7 @@ async def proxy_download(url: str, request: Request, background_tasks: Backgroun
             await response.aclose()
         raise
     except Exception as e:
-        # 封死长连接连接泄露盲区：一旦握手成功但在塞入后台任务前挂掉，前置执行物理熔断销毁
+        # 针对长连接握手成功、但在塞入后台任务前挂掉的极端情况进行前置熔断关闭，确保连接零泄露
         if response:
             await response.aclose()
         print(f"🚨 异步代购中转网络层崩溃: {e}")
