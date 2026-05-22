@@ -100,17 +100,6 @@ async def extract_stream(request: Request):
         # 激活隐藏 Cookie 物理生成
         current_cookie_path = utils_create_temp_cookie_file(cleaned_url)
 
-        # 【审查模块】：大厂匿名访问未配置 Cookie 巨量醒目警告
-        url_lower_check = cleaned_url.lower()
-        if ("twitter.com" in url_lower_check or "instagram.com" in url_lower_check) and not current_cookie_path:
-            warning_box = "\n" + "⚠️" * 50 + "\n"
-            warning_box += "⚠️ [严重警告] 未检测到有效的验证 Cookie，Twitter/IG 混合图文极易因大厂匿名风控导致图片抓取降级为 0！\n"
-            warning_box += "⚠️ [严重警告] 请立即前往 Render 或者是您的 VPS 后台配置对应的 TWITTER_COOKIE_TEXT 或 IG_COOKIE_TEXT 环境变量！\n"
-            warning_box += "⚠️" * 50 + "\n"
-            # 循环输出显性警告，确保在 Render 实时 Log 监控中产生绝对的视觉震慑效果
-            for _ in range(5):
-                print(warning_box)
-
         # 统一准备装载解析结果的数组
         media_list = []
 
@@ -122,38 +111,53 @@ async def extract_stream(request: Request):
             try:
                 gallery_config.load()
                 gallery_config.set(("output",), "mode", "url")
+                
+                # ------------------------------------------------------------
+                # 【修复 Bug 2：Cookie 配置作用域精确细化】
+                # ------------------------------------------------------------
                 if current_cookie_path:
-                    gallery_config.set(("extractor",), "cookies", current_cookie_path)
+                    if "twitter.com" in cleaned_url.lower():
+                        gallery_config.set(("extractor", "twitter"), "cookies", current_cookie_path)
+                        print(f"🔒 [作用域激活] 已将验证 Cookie 精准注入 gallery-dl 的 twitter 专属解析器空间")
+                    elif "instagram.com" in cleaned_url.lower():
+                        gallery_config.set(("extractor", "instagram"), "cookies", current_cookie_path)
+                        print(f"🔒 [作用域激活] 已将验证 Cookie 精准注入 gallery-dl 的 instagram 专属解析器空间")
+                    else:
+                        gallery_config.set(("extractor",), "cookies", current_cookie_path)
 
                 print(f"📸 [阶段一] gallery-dl 匹配成功！正在执行全量资产初步搜刮...")
 
                 capture_stream = io.StringIO()
                 with contextlib.redirect_stdout(capture_stream):
-                    job = gallery_job.DataJob(cleaned_url)
+                    # ------------------------------------------------------------
+                    # 【修复 Bug 1：强制使用 TextJob 以标准长文本逐行打印 URL】
+                    # ------------------------------------------------------------
+                    job = gallery_job.TextJob(cleaned_url)
                     job.run()
 
                 output_lines = capture_stream.getvalue().splitlines()
                 for line in output_lines:
                     clean_line = line.strip()
+                    # 此时 TextJob 吐出的已是纯净明文 URL，startswith 匹配率达成 100%
                     if clean_line.startswith("http://") or clean_line.startswith("https://"):
                         is_video_file = any(ext in clean_line.lower() for ext in [".mp4", ".m3u8", ".mov", ".webm"])
                         media_list.append({
                             "type": "video" if is_video_file else "image",
                             "url": clean_line
                         })
-                print(f"🎯 [阶段一完成] gallery-dl 搜刮到 {len(media_list)} 个基础资产节点")
+                print(f"🎯 [阶段一完成] gallery-dl (TextJob) 完美抓取到 {len(media_list)} 个原始资产节点")
             except Exception as gallery_err:
                 print(f"ℹ️ [阶段一提示] gallery-dl 解析遭遇非致命异常: {gallery_err}")
 
         # ==========================================
-        # 【阶段二：精细化协同与资产无损合并 (yt-dlp)】
+        # 【阶段二：高清视频重构升级与资产无损合并 (yt-dlp)】
         # ==========================================
         has_video_clue = any(m["type"] == "video" for m in media_list)
         is_major_platform = any(domain in cleaned_url.lower() for domain in ["twitter.com", "instagram.com"])
 
         # 触发判定条件：资产库为空、里面含有视频暗号，或是属于大厂混合平台
         if not media_list or has_video_clue or is_major_platform:
-            print(f"🔄 [阶段二] 触发重构协同判定，正在唤醒 yt-dlp 终极雷达进行高清视频与暗号大图剥离...")
+            print(f"🔄 [阶段二] 触发重构协同判定，正在唤醒 yt-dlp 终极雷达进行高清视频捕获...")
             
             ydl_opts = {
                 'quiet': True,
@@ -208,60 +212,30 @@ async def extract_stream(request: Request):
                         return any_progressive[-1].get('url')
                     return ""
 
-                # ------------------------------------------------------------
-                # 【新增核心逻辑】：Twitter 特征大图原件逆向搜刮雷达
-                # ------------------------------------------------------------
-                def extract_twitter_images_from_thumbnails(item_data) -> list:
-                    extracted_images = []
-                    if not item_data:
-                        return extracted_images
-                    
-                    # 循环彻底遍历内部包含的 thumbnails 数组
-                    thumbnails = item_data.get('thumbnails', [])
-                    for t in thumbnails:
-                        t_url = t.get('url', '')
-                        if t_url:
-                            # 【推特原图指纹强识别】：严格匹配属于大厂原图的特征关键字
-                            if any(kw in t_url.lower() for kw in ["pbs.twimg.com/media/", "twimg.com/media/"]):
-                                extracted_images.append({
-                                    "type": "image",
-                                    "url": t_url
-                                })
-                    return extracted_images
-
                 yt_dlp_videos = []
-                yt_dlp_images = []
-
-                # 1. 首先彻底提取顶层单页 info 级别的 thumbnails 原图资产
-                yt_dlp_images.extend(extract_twitter_images_from_thumbnails(info))
-
-                # 2. 接着提取视频和子 entries 级别的 thumbnails 资产
                 if 'entries' in info and info['entries']:
                     for entry in info['entries']:
                         if not entry: continue
-                        # 提取子节点视频
                         v_url = resolve_pure_mp4_url(entry)
                         if v_url:
                             yt_dlp_videos.append({"type": "video", "url": v_url})
-                        # 彻底循环遍历 entry 子内部的 thumbnails 资产
-                        yt_dlp_images.extend(extract_twitter_images_from_thumbnails(entry))
                 else:
-                    # 单视频页面提取视频
                     v_url = resolve_pure_mp4_url(info)
                     if v_url:
                         yt_dlp_videos.append({"type": "video", "url": v_url})
 
                 # ------------------------------------------------------------
-                # 【无损合并守则】：精细化多轨无损合并 - 绝不漏掉一个视频和大图
+                # 【无损合并守则】：认清 yt-dlp 局限性，大图资产 100% 依赖第一阶段 TextJob 确保完好无损
                 # ------------------------------------------------------------
-                # 保留阶段一 gallery-dl 已经捞出来的全部原始图片节点
+                # 精准过滤并提取出第一阶段 TextJob 搜刮到的全部合法的 image 节点
                 retained_images = [m for m in media_list if m["type"] == "image"]
                 
-                # 全量无损并行拼装：阶段一保留大图 + 阶段二从 thumbnails 里强力抢救回来的推特独立大图原件 + yt-dlp 高清纯净视频
-                media_list = retained_images + yt_dlp_images + yt_dlp_videos
-                
-                print(f"⚡ [雷达强力搜刮成功] 当前阶段二资产对齐：保留阶段一图片 {len(retained_images)} 个，"
-                      f"yt-dlp 抢救回独立图片原件 {len(yt_dlp_images)} 个，并入高清纯净视频 {len(yt_dlp_videos)} 个")
+                if yt_dlp_videos:
+                    # 用第两阶段捕获的高清纯净 MP4 直链，无缝拼接第一阶段过滤出的图片资产
+                    media_list = retained_images + yt_dlp_videos
+                    print(f"⚡ [无损拼装成功] 资产阵列已对齐：保留第一阶段 TextJob 大图 {len(retained_images)} 个，并入第二阶段 yt-dlp 高清视频 {len(yt_dlp_videos)} 个")
+                else:
+                    print(f"ℹ️ [阶段二提示] yt-dlp 未发现更新的高清视频，保留原有解析队列形态")
             
             except Exception as ytdlp_err:
                 print(f"ℹ️ [阶段二提示] yt-dlp 解析遭遇非致命异常: {ytdlp_err}")
