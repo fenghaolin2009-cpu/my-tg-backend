@@ -3,15 +3,12 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import yt_dlp
-import gallery_dl
-from gallery_dl import config as gallery_config, job as gallery_job
 import requests
 import uuid
 import os
 import re
 import tempfile
-import io
-import contextlib
+import subprocess
 
 # 1. 初始化纯净的 FastAPI 应用
 app = FastAPI(title="SnapDownloader Pure-Link Anti-M3U8 Backend")
@@ -104,50 +101,44 @@ async def extract_stream(request: Request):
         media_list = []
 
         # ==========================================
-        # 【阶段一：资产初筛搜刮 (gallery-dl)】
+        # 【阶段一：全量改用极其稳定的 subprocess 核心】
         # ==========================================
-        extractor = gallery_dl.extractor.find(cleaned_url)
-        if extractor is not None:
-            try:
-                gallery_config.load()
-                gallery_config.set(("output",), "mode", "url")
-                
-                # ------------------------------------------------------------
-                # 【修复 Bug 2：Cookie 配置作用域精确细化】
-                # ------------------------------------------------------------
-                if current_cookie_path:
-                    if "twitter.com" in cleaned_url.lower():
-                        gallery_config.set(("extractor", "twitter"), "cookies", current_cookie_path)
-                        print(f"🔒 [作用域激活] 已将验证 Cookie 精准注入 gallery-dl 的 twitter 专属解析器空间")
-                    elif "instagram.com" in cleaned_url.lower():
-                        gallery_config.set(("extractor", "instagram"), "cookies", current_cookie_path)
-                        print(f"🔒 [作用域激活] 已将验证 Cookie 精准注入 gallery-dl 的 instagram 专属解析器空间")
-                    else:
-                        gallery_config.set(("extractor",), "cookies", current_cookie_path)
+        try:
+            # 构建工业级原生命令行参数，-g 代表 --get-urls 纯文本直链输出
+            cmd = ["gallery-dl", "-g", cleaned_url]
+            
+            # 【Cookie 动态追加】：如存在凭证，精准送入系统级 CLI 变量空间
+            if current_cookie_path:
+                cmd.extend(["--cookies", current_cookie_path])
+                print(f"🔒 [安全注入] 已将当前大厂验证 Cookie 追加注入系统级 subprocess 核心管道参数中")
 
-                print(f"📸 [阶段一] gallery-dl 匹配成功！正在执行全量资产初步搜刮...")
+            print(f"📸 [阶段一] 启动系统级 subprocess 调用 gallery-dl CLI: {' '.join(cmd)}")
+            
+            # 唤醒强力进程管道捕获输出流
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=35  # 设定宽裕的超时拦截，防止僵尸进程卡死网关
+            )
 
-                capture_stream = io.StringIO()
-                with contextlib.redirect_stdout(capture_stream):
-                    # ------------------------------------------------------------
-                    # 【修复 Bug 1：强制使用 TextJob 以标准长文本逐行打印 URL】
-                    # ------------------------------------------------------------
-                    job = gallery_job.TextJob(cleaned_url)
-                    job.run()
-
-                output_lines = capture_stream.getvalue().splitlines()
-                for line in output_lines:
-                    clean_line = line.strip()
-                    # 此时 TextJob 吐出的已是纯净明文 URL，startswith 匹配率达成 100%
-                    if clean_line.startswith("http://") or clean_line.startswith("https://"):
-                        is_video_file = any(ext in clean_line.lower() for ext in [".mp4", ".m3u8", ".mov", ".webm"])
-                        media_list.append({
-                            "type": "video" if is_video_file else "image",
-                            "url": clean_line
-                        })
-                print(f"🎯 [阶段一完成] gallery-dl (TextJob) 完美抓取到 {len(media_list)} 个原始资产节点")
-            except Exception as gallery_err:
-                print(f"ℹ️ [阶段一提示] gallery-dl 解析遭遇非致命异常: {gallery_err}")
+            # 【无损行捕获】：对 stdout 结果集进行标准逐行洗涤
+            output_lines = result.stdout.splitlines()
+            for line in output_lines:
+                clean_line = line.strip()
+                if clean_line.startswith("http://") or clean_line.startswith("https://"):
+                    # 识别和打标基础资产类型
+                    is_video_file = any(ext in clean_line.lower() for ext in [".mp4", ".m3u8", ".mov", ".webm"])
+                    media_list.append({
+                        "type": "video" if is_video_file else "image",
+                        "url": clean_line
+                    })
+            print(f"🎯 [阶段一完成] subprocess 核心成功从命令行捕获到 {len(media_list)} 个原始资产节点")
+        except subprocess.CalledProcessError as sub_err:
+            print(f"ℹ️ [阶段一提示] gallery-dl CLI 返回非零状态码: {sub_err.returncode}, 错误输出: {sub_err.stderr}")
+        except Exception as gallery_err:
+            print(f"ℹ️ [阶段一提示] 核心管道建立失败或发生致命擦肩错误: {gallery_err}")
 
         # ==========================================
         # 【阶段二：高清视频重构升级与资产无损合并 (yt-dlp)】
@@ -225,17 +216,17 @@ async def extract_stream(request: Request):
                         yt_dlp_videos.append({"type": "video", "url": v_url})
 
                 # ------------------------------------------------------------
-                # 【无损合并守则】：认清 yt-dlp 局限性，大图资产 100% 依赖第一阶段 TextJob 确保完好无损
+                # 【硬核无损拼装机制】：大图 100% 依赖第一阶段极稳命令行捕获
                 # ------------------------------------------------------------
-                # 精准过滤并提取出第一阶段 TextJob 搜刮到的全部合法的 image 节点
+                # 死死保住、绝不篡改阶段一通过命令流抢夺出来的所有 type 为 image 的大图节点
                 retained_images = [m for m in media_list if m["type"] == "image"]
                 
                 if yt_dlp_videos:
-                    # 用第两阶段捕获的高清纯净 MP4 直链，无缝拼接第一阶段过滤出的图片资产
+                    # 使用极其清晰的高清视频流覆盖并无损拼接大图资产，防止丢失
                     media_list = retained_images + yt_dlp_videos
-                    print(f"⚡ [无损拼装成功] 资产阵列已对齐：保留第一阶段 TextJob 大图 {len(retained_images)} 个，并入第二阶段 yt-dlp 高清视频 {len(yt_dlp_videos)} 个")
+                    print(f"⚡ [重构无损对齐] 拼装成功：完好留存阶段一图片 {len(retained_images)} 个，覆盖并入阶段二高清视频 {len(yt_dlp_videos)} 个")
                 else:
-                    print(f"ℹ️ [阶段二提示] yt-dlp 未发现更新的高清视频，保留原有解析队列形态")
+                    print(f"ℹ️ [阶段二提示] yt-dlp 雷达未捕获到更新的高清实体视频，采用原有阵列维持形态")
             
             except Exception as ytdlp_err:
                 print(f"ℹ️ [阶段二提示] yt-dlp 解析遭遇非致命异常: {ytdlp_err}")
@@ -249,7 +240,7 @@ async def extract_stream(request: Request):
             url = item["url"]
             url_lower = url.lower()
             
-            # 马奇诺防线：任何渠道残留的恶意 m3u8 / manifest 链接一律强力抹除，不予放行
+            # 马奇诺防线：任何渠道残留的恶意 m3u8 / manifest 假文本链接一律抹除阻断，绝不放行
             if ".m3u8" in url_lower or "manifest" in url_lower:
                 continue
                 
@@ -288,7 +279,7 @@ async def extract_stream(request: Request):
             utils_safe_remove_cookie_file(current_cookie_path)
 
 
-# 4. 免受 CORS 跨域防盗链困扰的 proxy-download 代理中转接口（保持原样，未做任何修改）
+# 4. 免受 CORS 跨域防盗链困扰的 proxy-download 代理中转接口（保持原样，稳定工作）
 @app.get("/api/v1/proxy-download")
 def proxy_download(url: str):
     if not url:
