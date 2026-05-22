@@ -217,10 +217,17 @@ async def extract_stream(request: Request):
                       f"雷达捞回大图 {len(yt_dlp_images)} 个，合并并入高清纯净视频 {len(yt_dlp_videos)} 个")
             
             except Exception as ytdlp_err:
+                # ------------------------------------------------------------
+                # 【修复 Bug 2：精准风控透传拦截拦截器】
+                # ------------------------------------------------------------
+                err_msg_str = str(ytdlp_err).lower()
+                if "confirm you're not a bot" in err_msg_str or "sign in to confirm" in err_msg_str:
+                    print(f"🚨 [风控阻断] yt-dlp 触发大厂强力机器人登录墙验证，立即强制向外层顶级捕获器进行 raise 抛出！")
+                    raise ytdlp_err
                 print(f"ℹ️ [阶段二提示] yt-dlp 核心逆向遭遇非致命异常: {ytdlp_err}")
 
         # ==========================================
-        # 【阶段三：最终收网、安全去重与 M3U8 残留拦截】
+        # 【阶段三：最终收网、安全去重与 M3U8 残流拦截】
         # ==========================================
         seen_urls = set()
         final_media_list = []
@@ -268,18 +275,20 @@ async def extract_stream(request: Request):
             utils_safe_remove_cookie_file(current_cookie_path)
 
 
-# 4. 免受 CORS 跨域防盗链困扰的 proxy-download 代理中转接口
+# ------------------------------------------------------------
+# 【修复 Bug 3：升级 Range 隧道双向透传流式代购代理接口】
+# ------------------------------------------------------------
 @app.get("/api/v1/proxy-download")
-def proxy_download(url: str):
+def proxy_download(url: str, request: Request):
     if not url:
         raise HTTPException(status_code=400, detail="缺少必要的 url 参数")
 
-    print(f"📥 requests 跨域中转网关接管，正在搬运实时流...")
+    print(f"📥 Range 隧道代理网关接管，正在为客户端建立透传搬运流...")
 
+    # 1. 基础反盗链头部伪装
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     }
-
     url_lower = url.lower()
     if "tiktok.com" in url_lower:
         headers["Referer"] = "https://www.tiktok.com/"
@@ -288,10 +297,18 @@ def proxy_download(url: str):
     elif "twitter.com" in url_lower or "x.com" in url_lower or "twimg.com" in url_lower:
         headers["Referer"] = "https://x.com/"
 
+    # 2. 强行捕获当前前端浏览器传入的 Range 分块读取头，塞入转发 headers 队列
+    client_range = request.headers.get("Range")
+    if client_range:
+        headers["Range"] = client_range
+        print(f"🚀 [Range 隧道] 成功捕获前端分块请求头: {client_range}，已将其透传给源头 CDN")
+
     try:
+        # 发起流式长连接二进制搬运
         response = requests.get(url, headers=headers, stream=True, timeout=30)
 
-        if response.status_code != 200:
+        # 允许 200 (全量获取) 以及 206 (局部 Partial Content 分块获取) 正常通行
+        if response.status_code not in [200, 206]:
             print(f"🚨 requests 跨域搬运握手失败，CDN 状态码: {response.status_code}")
             raise HTTPException(status_code=response.status_code, detail=f"目标直链响应异常，状态码: {response.status_code}")
 
@@ -303,12 +320,27 @@ def proxy_download(url: str):
         content_type = response.headers.get("Content-Type", "application/octet-stream")
         filename = "file.mp4" if "video" in content_type.lower() else "image.jpg"
 
+        # 3. 动态读取并双向透传大厂响应的流媒体特征关键头部
+        out_headers = {
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+        
+        if "Content-Range" in response.headers:
+            out_headers["Content-Range"] = response.headers["Content-Range"]
+        if "Accept-Ranges" in response.headers:
+            out_headers["Accept-Ranges"] = response.headers["Accept-Ranges"]
+        else:
+            out_headers["Accept-Ranges"] = "bytes"  # 如果大厂未主动返回，强制对外宣告支持 bytes 分块
+            
+        if "Content-Length" in response.headers:
+            out_headers["Content-Length"] = response.headers["Content-Length"]
+
+        # 4. 状态码由死板的 200 升级为根据大厂响应码动态回传（如返回 206 则是标准的 Partial Content 握手）
         return StreamingResponse(
             chunk_generator(),
+            status_code=response.status_code,
             media_type=content_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
+            headers=out_headers
         )
 
     except HTTPException:
