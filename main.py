@@ -136,15 +136,16 @@ async def extract_stream(request: Request):
         if not media_list or has_video_clue or is_major_platform:
             print(f"🔄 [阶段二] 触发重构协同判定，正在唤醒 yt-dlp 终极雷达进行高清视频捕获...")
             
+            # ------------------------------------------------------------
+            # 【重构控制点一：彻底解绑全局 User-Agent，激活真机原生指纹对齐】
+            # ------------------------------------------------------------
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
                 'skip_download': True,
                 'extract_flat': False,
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                },
+                # 剔除了强制注入的 Desktop 级 http_headers，允许引擎根据客户端数组自动指纹闭环
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['android', 'ios', 'web_creator', 'mweb', 'tv']
@@ -218,7 +219,7 @@ async def extract_stream(request: Request):
             
             except Exception as ytdlp_err:
                 # ------------------------------------------------------------
-                # 【修复 Bug 2：精准风控透传拦截拦截器】
+                # 【完美保留：大厂强力登录墙异常强透传抛出机制】
                 # ------------------------------------------------------------
                 err_msg_str = str(ytdlp_err).lower()
                 if "confirm you're not a bot" in err_msg_str or "sign in to confirm" in err_msg_str:
@@ -275,9 +276,9 @@ async def extract_stream(request: Request):
             utils_safe_remove_cookie_file(current_cookie_path)
 
 
-# ------------------------------------------------------------
-# 【修复 Bug 3：升级 Range 隧道双向透传流式代购代理接口】
-# ------------------------------------------------------------
+# ============================================================
+# 【完美保留：Range 隧道双向透传流式代理下载服务（无缝预览、随意拖动seek）】
+# ============================================================
 @app.get("/api/v1/proxy-download")
 def proxy_download(url: str, request: Request):
     if not url:
