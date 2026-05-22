@@ -1,19 +1,20 @@
 # 文件名: main.py
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 import yt_dlp
-import gallery_dl  # 引入图文开放路由盲测引擎
+import gallery_dl  # 🚀 重磅回归：引入图文提取核心包
 from gallery_dl import config as gallery_config, job as gallery_job
+import requests
 import uuid
 import os
 import re
-import zipfile
-import shutil
-import tempfile  # 智能引入跨平台临时目录库，在 Ubuntu/Render 上会自动指向 /tmp
+import tempfile
+import io
+import contextlib  # 🚀 引入上下文管理器，用于无损捕获 gallery-dl 的模拟直链输出
 
-# 1. 初始化纯净的 FastAPI 应用（彻底移除 mangum）
-app = FastAPI(title="SnapDownloader Standard Server Backend")
+# 1. 初始化纯净的 FastAPI 应用
+app = FastAPI(title="SnapDownloader Pure-Link Dual-Engine Backend")
 
 # 2. 开启全量 CORS 跨域配置
 app.add_middleware(
@@ -24,34 +25,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 3. 全局内存下载缓存字典
-DOWNLOAD_CACHE = {}
 
-
-# 后台清理函数 1：图文专属阅后即焚（传输完毕后彻底删除临时目录和 ZIP 包，保持硬盘干净）
-def cleanup_gallery_task(directory: str, zip_file: str):
-    try:
-        if os.path.exists(directory):
-            shutil.rmtree(directory)
-            print(f"🗑️ [常规服务器 阅后即焚] 临时图集原图目录已绝对擦除: {directory}")
-        if os.path.exists(zip_file):
-            os.remove(zip_file)
-            print(f"🗑️ [常规服务器 阅后即焚] 临时图集 ZIP 压缩包已绝对擦除: {zip_file}")
-    except Exception as cleanup_err:
-        print(f"❌ [常规服务器 阅后即焚] 清理图集暂存失败: {cleanup_err}")
-
-
-# 后台清理函数 2：视频专属阅后即焚
-def cleanup_video_task(file_path: str):
-    try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"🗑️ [常规服务器 阅后即焚] 临时视频文件已绝对擦除: {file_path}")
-    except Exception as cleanup_err:
-        print(f"❌ [常规服务器 阅后即焚] 清理视频暂存失败: {cleanup_err}")
-
-
-# 工具函数 1：正则表达式清洗过滤文本口令（捞出首个包含 http/https 的纯网址）
+# 工具函数 1：正则表达式清洗过滤文本口令（剥离出干净的网址）
 def utils_extract_clean_url(dirty_text: str) -> str:
     match = re.search(r"https?://[^\s]+", dirty_text)
     if match:
@@ -59,7 +34,7 @@ def utils_extract_clean_url(dirty_text: str) -> str:
     return ""
 
 
-# 工具函数 2：根据网址从环境变量动态生成临时 Cookie 文件（隐藏兜底防线）
+# 工具函数 2：根据网址从环境变量动态生成临时 Cookie 文件（作为匿名失败时的终极后备兜底隐藏手段）
 def utils_create_temp_cookie_file(url: str) -> str:
     url_lower = url.lower()
     cookie_text = ""
@@ -95,14 +70,10 @@ def utils_safe_remove_cookie_file(cookie_path: str):
 @app.get("/")
 @app.get("/api/v1/health")
 async def health_check():
-    return {
-        "status": "ok", 
-        "message": "标准独享服务器通用流媒体盲测分流服务正常运行中...",
-        "active_tasks": len(DOWNLOAD_CACHE)
-    }
+    return {"status": "ok", "message": "双引擎纯直链解析开放网关正在全速运行中..."}
 
 
-# 4. 全开放智能路由器提取接口
+# 3. 核心接口：双引擎盲测全开放纯直链提取接口
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     current_cookie_path = ""
@@ -111,49 +82,77 @@ async def extract_stream(request: Request):
         dirty_input = raw_body.decode("utf-8").strip()
         
         print(f"========================================")
-        print(f"📥 全开放路由器收到文本请求: {dirty_input[:100]}...")
+        print(f"📥 开放直链网关收到文本请求: {dirty_input[:100]}...")
         print(f"========================================")
         
         cleaned_url = utils_extract_clean_url(dirty_input)
-        
-        # 大门全开验证
         if not cleaned_url or not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
             raise HTTPException(status_code=400, detail="未检测到合法的 http:// 或 https:// 视频或图集链接")
             
-        print(f"✨ 开放网关清洗出目标 URL: {cleaned_url}")
+        print(f"✨ 网关清洗出纯净目标 URL: {cleaned_url}")
         
-        # 激活隐藏 Cookie 物理生成（如果配置了环境变量）
+        # 激活隐藏 Cookie 物理生成（若有配置环境变量）
         current_cookie_path = utils_create_temp_cookie_file(cleaned_url)
 
-        # 初始化基础响应元数据模板
-        task_type = "video"
-        title = "全球全能路由器高速解析内容"
-        cover = "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=500"
-        size_str = "高清原流"
+        # 统一准备装载解析结果的数组
+        media_list = []
         
-        # 双引擎智能盲测分流逻辑
+        # 🚀 【核心修复点一：智能双引擎盲测分流】
         try:
-            # Step A: 优先使用 gallery-dl 底层引擎探测是否属于其原生识别的图集
+            # Step A: 盲测第一步，检查该域名是否属于 gallery-dl 原生支持的高清图文提取范围
             extractor = gallery_dl.extractor.find(cleaned_url)
             if extractor is None:
-                raise ValueError("gallery-dl 盲测未匹配，该平台不属于其原生图文写真提取范围")
+                raise ValueError("gallery-dl 盲测未匹配，转交二次防御视频流引擎")
             
-            task_type = "image"
-            title = f"📸 专属全能高清图文图集 ({cleaned_url.split('//')[-1].split('/')[0]})"
-            size_str = "图文图集"
-            print(f"🎯 [盲测分流] gallery-dl 匹配成功，系统挂载为【纯图文/照片墙】序列")
+            # 配置 gallery-dl 为纯模拟提取（不落盘、不下载文件）模式，仅吐出直链数据
+            gallery_config.load()
+            gallery_config.set(("output",), "mode", "url") # 强制令其只在控制台输出解析出的原图直链
+            if current_cookie_path:
+                gallery_config.set(("extractor",), "cookies", current_cookie_path)
+                
+            print(f"📸 [双引擎分流] gallery-dl 成功拦截！正在启动【非下载模拟模式】深度剥离图集直链...")
             
+            # 利用 Python 标准库重定向技术，完美、无损地捕获 gallery-dl 在内存中吐出的全部直链文本
+            capture_stream = io.StringIO()
+            with contextlib.redirect_stdout(capture_stream):
+                job = gallery_job.DataJob(cleaned_url)
+                job.run()
+                
+            # 整理提取出来的文本行
+            output_lines = capture_stream.getvalue().splitlines()
+            for line in output_lines:
+                clean_line = line.strip()
+                # 只要是以 http 开头的连续字符串，皆判定为成功剥离的高清原图 CDN 真实网址
+                if clean_line.startswith("http://") or clean_line.startswith("https://"):
+                    # 智能化检测后缀，防止部分图文帖子内部夹杂短视频
+                    is_video_file = any(ext in clean_line.lower() for ext in [".mp4", ".m3u8", ".mov", ".webm"])
+                    media_list.append({
+                        "type": "video" if is_video_file else "image",
+                        "url": clean_line
+                    })
+            
+            if not media_list:
+                raise ValueError("gallery-dl 在该页面中未能捕获到可用的图片直链数据")
+            print(f"🎯 [gallery-dl 提取成功] 共成功剥离出 {len(media_list)} 个高清图文直链")
+
         except Exception as gallery_err:
-            # Step B: gallery-dl 识别失败，平滑向二次防御网：yt-dlp 视频大厂引擎接管
-            print(f"ℹ️ gallery-dl 探测未通过，转交 yt-dlp 视频流引擎。原因: {gallery_err}")
+            # Step B: gallery-dl 报错或判定不是纯图文，立刻无缝转交给 yt-dlp 视频大厂引擎接管
+            print(f"ℹ️ gallery-dl 探测未通过，全自动流向二次防御网：yt-dlp 视频流引擎。原因: {gallery_err}")
             
+            # 配置 yt-dlp 核心参数（绝对禁止下载，只抓取直链元数据）
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'skip_download': True,
+                'skip_download': True,      # 核心：大门全开绝不落盘
                 'extract_flat': False,
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                },
+                # 🚀 【核心修复点三】：强力注入特制 YouTube 移动端指纹伪装，绝不遗漏，完美穿透机房常规拦截
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web_creator']
+                    }
                 }
             }
             if current_cookie_path:
@@ -161,182 +160,120 @@ async def extract_stream(request: Request):
                 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(cleaned_url, download=False)
-                title = info.get('title', title)
-                cover = info.get('thumbnail') or cover
-                if not cover and info.get('thumbnails'):
-                    cover = info['thumbnails'][-1].get('url')
-                filesize = info.get('filesize') or info.get('filesize_approx')
-                if filesize:
-                    size_str = f"{filesize / (1024 * 1024):.1f} MB"
                 
-                # 特殊 playlist 或纯图集微调判定
-                if info.get('entries') or info.get('_type') == 'playlist' or (not info.get('url') and not any(f.get('vcodec') != 'none' for f in info.get('formats', []))):
-                    task_type = "image"
-                    size_str = "图文图集"
-                    print(f"🔄 [动态微调] yt-dlp 指纹特征识别其为播放列表或纯图集，重置为【image】")
+                # 场景一：多视频/多媒体（Entries 存在）
+                if 'entries' in info and info['entries']:
+                    for entry in info['entries']:
+                        if not entry: continue
+                        url = entry.get('url')
+                        if not url and entry.get('formats'):
+                            valid_formats = [f for f in entry['formats'] if f.get('url')]
+                            if valid_formats: url = valid_formats[-1].get('url')
+                        if not url: url = entry.get('thumbnail')
+                        
+                        if url:
+                            is_video = entry.get('ext') in ['mp4', 'm3u8', 'mov', 'webm', 'flv'] or (entry.get('vcodec') and entry.get('vcodec') != 'none') or any(x in url.lower() for x in ['.mp4', '.m3u8', '.mov', 'video'])
+                            media_list.append({
+                                "type": "video" if is_video else "image",
+                                "url": url
+                            })
+                # 场景二：常规单媒体（纯单视频或纯单图）
                 else:
-                    task_type = "video"
-                    print(f"🎯 [盲测分流] yt-dlp 识别成功，系统挂载为【无损视频原流】序列")
+                    url = info.get('url')
+                    if not url and info.get('formats'):
+                        valid_formats = [f for f in info['formats'] if f.get('url')]
+                        if valid_formats: url = valid_formats[-1].get('url')
+                            
+                    if url:
+                        is_video = True
+                        if info.get('ext') in ['jpg', 'png', 'jpeg', 'webp'] or any(x in url.lower() for x in ['.jpg', '.jpeg', '.png', '.webp']):
+                            is_video = False
+                        media_list.append({
+                            "type": "video" if is_video else "image",
+                            "url": url
+                        })
+            
+            if not media_list:
+                raise Exception("双引擎盲测均未能从该页面中提取到任何有效的媒体高清直链地址")
+            print(f"🎯 [yt-dlp 提取成功] 共成功挖掘出 {len(media_list)} 个无损流媒体直链")
 
-        # 登记缓存任务
-        task_id = str(uuid.uuid4())[:12]
-        DOWNLOAD_CACHE[task_id] = {
-            "original_url": cleaned_url,
-            "type": task_type
-        }
-        
-        print(f"🔑 全局注册任务 ID: {task_id}，流媒体形态: {task_type}")
-        
-        base_url = str(request.base_url).rstrip('/')
-        proxy_download_url = f"{base_url}/api/v1/download?id={task_id}"
-        
+        # 🚀 【核心修复点四】：严格按照你给出的最新前端工业级响应规范返回 JSON 体
         return {
-          "type": task_type,
-          "title": title,
-          "size": size_str,
-          "cover": cover,
-          "actions": [
-            { 
-              "type": "primary", 
-              "label": "🟢 高速打包下载" if task_type == "image" else "🟢 高速无损下载", 
-              "url": proxy_download_url 
-            }
-          ]
+            "code": 200,
+            "msg": "success",
+            "data": media_list
         }
             
     except HTTPException:
         raise
     except Exception as e:
-        # 全链路高情商大厂风控优雅报错拦截（大小写不敏感匹配）
+        # 保持全套高情商风控中文报错拦截（大小写不敏感匹配）
         error_msg_raw = str(e)
         error_msg_lower = error_msg_raw.lower()
-        print(f"❌ 盲测崩溃，风控层截获原因: {error_msg_raw}")
+        print(f"❌ 双引擎全链路崩溃，截获原因为: {error_msg_raw}")
         
         if "cookies" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。")
         if "twitter" in error_msg_lower and "no video" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了海外公共机房 IP 匿名访问限制，请稍后重试。")
         if "instagram" in error_msg_lower and "no video" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试.")
+            raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。")
             
-        raise HTTPException(status_code=500, detail=f"全球流媒体网关未能识别或成功嗅探此网址，请检查链接公开可访问性: {error_msg_raw}")
+        raise HTTPException(status_code=500, detail=f"全球流媒体开放网关双引擎提取失败，请检查链接公开可访问性: {error_msg_raw}")
     finally:
         if current_cookie_path:
             utils_safe_remove_cookie_file(current_cookie_path)
 
 
-# 5. 标准常规服务器同步中转下载落盘接口
-@app.get("/api/v1/download")
-def proxy_download(id: str, background_tasks: BackgroundTasks):
-    if not id or id not in DOWNLOAD_CACHE:
-        raise HTTPException(status_code=404, detail="下载任务已失效或服务器已重启，请回前端重新解析")
+# 4. 🚀 【核心修复点五】：统一留存中转代理透传接口（路径完全贴合前端所要求的 proxy-download）
+@app.get("/api/v1/proxy-download")
+def proxy_download(url: str):
+    if not url:
+        raise HTTPException(status_code=400, detail="缺少必要的 url 参数")
         
-    task_info = DOWNLOAD_CACHE[id]
-    original_url = task_info["original_url"]
-    task_type = task_info["type"]
+    print(f"📥 requests 跨域中转网关接管，正在实时流式搬运资源...")
     
-    print(f"🚀 [标准落盘启动] 目标流: {original_url}，数据形态: {task_type}")
-    current_cookie_path = utils_create_temp_cookie_file(original_url)
-    temp_dir = tempfile.gettempdir()  # 在 Linux/Render 上自动获取并指向 /tmp 目录
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    }
     
-    # ---------------- 📸 分支 A：纯图文/照片墙处理流 (gallery-dl) ----------------
-    if task_type == "image":
-        task_dir = os.path.join(temp_dir, f"gallery_{id}")
-        zip_path = os.path.join(temp_dir, f"images_{id}.zip")
-        os.makedirs(task_dir, exist_ok=True)
+    # 动态智能追加对应的防盗链钥匙 Referer
+    url_lower = url.lower()
+    if "tiktok.com" in url_lower:
+        headers["Referer"] = "https://www.tiktok.com/"
+    elif "instagram.com" in url_lower:
+        headers["Referer"] = "https://www.instagram.com/"
+    elif "twitter.com" in url_lower or "x.com" in url_lower:
+        headers["Referer"] = "https://x.com/"
         
-        try:
-            gallery_config.load()
-            gallery_config.set(("extractor",), "base-directory", task_dir)
-            if current_cookie_path:
-                gallery_config.set(("extractor",), "cookies", current_cookie_path)
-                
-            print(f"📥 gallery-dl 落盘执行图片拉取...")
-            gallery_job.DownloadJob(original_url).run()
+    try:
+        # 使用 requests.get 并设置 stream=True 启动纯内存长连接实时字节搬运，物理硬盘永远 0% 占用
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
+        
+        if response.status_code != 200:
+            print(f"🚨 requests 跨域搬运握手失败，目标 CDN 状态码: {response.status_code}")
+            raise HTTPException(status_code=response.status_code, detail=f"目标直链响应异常，状态码: {response.status_code}")
             
-            # 使用 zipfile 压缩归丁
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                has_files = False
-                for root, dirs, files in os.walk(task_dir):
-                    for file in files:
-                        has_files = True
-                        file_full_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_full_path, task_dir)
-                        zipf.write(file_full_path, arcname)
-                        
-            if not has_files or not os.path.exists(zip_path) or os.path.getsize(zip_path) == 0:
-                raise Exception("gallery-dl 开放提取引擎未能在此页面成功剥离出图片")
-                
-            print(f"🟢 服务器图集打包压缩成功！ZIP 大小: {os.path.getsize(zip_path)/(1024*1024):.2f} MB")
-            
-            # 注册“阅后即焚”后台任务，传输完毕后由 FastAPI 自动在后台擦除
-            background_tasks.add_task(cleanup_gallery_task, task_dir, zip_path)
-            
-            return FileResponse(
-                path=zip_path,
-                media_type="application/zip",
-                filename="images.zip"
-            )
-            
-        except Exception as e:
-            cleanup_gallery_task(task_dir, zip_path)  # 出错立即清空残渣
-            error_msg_raw = str(e)
-            error_msg_lower = error_msg_raw.lower()
-            if "cookies" in error_msg_lower:
-                raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。")
-            raise HTTPException(status_code=500, detail=f"图集打包暂存失败: {error_msg_raw}")
-        finally:
-            if current_cookie_path:
-                utils_safe_remove_cookie_file(current_cookie_path)
-
-    # ---------------- 📹 分支 B：流媒体视频处理流 (yt-dlp) ----------------
-    else:
-        file_path = os.path.join(temp_dir, f"snap_{id}.mp4")
-        ydl_opts = {
-            'outtmpl': file_path,
-            'format': 'best[ext=mp4]/best/mp4',  # 免登录基础兼容 MP4 独立单格式封装，确保高通过率
-            'quiet': True,
-            'no_warnings': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        # 建立分块生成器，每次运送 64KB 二进制碎片，保障高并发不爆内存
+        def chunk_generator():
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+                    
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        filename = "file.mp4" if "video" in content_type.lower() else "image.jpg"
+        
+        # 强制通知浏览器执行下载保存动作
+        return StreamingResponse(
+            chunk_generator(),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
             }
-        }
-        if current_cookie_path:
-            ydl_opts['cookiefile'] = current_cookie_path
-            
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([original_url])
-                
-            if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-                raise Exception("yt-dlp 下载引擎未能成功在服务器生成视频实体")
-                
-            print(f"🟢 服务器视频实体落盘成功！暂存路径: {file_path}")
-            
-            # 注册“阅后即焚”后台视频清理任务
-            background_tasks.add_task(cleanup_video_task, file_path)
-            
-            return FileResponse(
-                path=file_path,
-                media_type="video/mp4",
-                filename="video.mp4"
-            )
-            
-        except Exception as e:
-            if os.path.exists(file_path):
-                try: os.remove(file_path)
-                except: pass
-                
-            error_msg_raw = str(e)
-            error_msg_lower = error_msg_raw.lower()
-            if "cookies" in error_msg_lower:
-                raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。")
-            if "twitter" in error_msg_lower and "no video" in error_msg_lower:
-                raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了海外公共机房 IP 匿名访问限制，请稍后重试。")
-            if "instagram" in error_msg_lower and "no video" in error_msg_lower:
-                raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。")
-                
-            raise HTTPException(status_code=500, detail=f"视频落盘暂存失败: {error_msg_raw}")
-        finally:
-            if current_cookie_path:
-                utils_safe_remove_cookie_file(current_cookie_path)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"🚨 中转代理网络层发生不可逆崩溃: {e}")
+        raise HTTPException(status_code=500, detail=f"后端免跨域流式中转失败: {str(e)}")
