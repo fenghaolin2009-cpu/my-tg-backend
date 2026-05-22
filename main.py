@@ -74,7 +74,7 @@ async def health_check():
     return {"status": "ok", "message": "终结 2KB 骗子文件！全球流媒体开放网关全量平稳运行中..."}
 
 
-# 3. 核心接口：双引擎协同串联流水线提取接口
+# 3. 核心接口：双引擎串联协同无损流水线提取接口
 @app.post("/api/v1/extract")
 async def extract_stream(request: Request):
     current_cookie_path = ""
@@ -90,10 +90,28 @@ async def extract_stream(request: Request):
         if not cleaned_url or not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
             raise HTTPException(status_code=400, detail="未检测到合法的 http:// 或 https:// 视频或图集链接")
 
-        print(f"✨ 网关清洗出纯净目标 URL: {cleaned_url}")
+        # ------------------------------------------------------------
+        # 【逻辑核心一：域名强行洗白（针对 gallery-dl 匹配进行全面优化）】
+        # ------------------------------------------------------------
+        if "x.com" in cleaned_url.lower():
+            cleaned_url = cleaned_url.replace("x.com", "twitter.com").replace("X.com", "twitter.com")
+            print(f"🔄 [域名洗白] 检测到 x.com 域名，已强行修正替换为 twitter.com 以激活 gallery-dl 核心解析器规则")
+
+        print(f"✨ 网关清洗后送入流水线的最终 URL: {cleaned_url}")
 
         # 激活隐藏 Cookie 物理生成
         current_cookie_path = utils_create_temp_cookie_file(cleaned_url)
+
+        # ------------------------------------------------------------
+        # 【逻辑核心二：风控环境审查，大厂匿名访问未配置 Cookie 巨量警告】
+        # ------------------------------------------------------------
+        url_lower_check = cleaned_url.lower()
+        if ("twitter.com" in url_lower_check or "instagram.com" in url_lower_check) and not current_cookie_path:
+            warning_box = "\n" + "⚠️" * 40 + "\n"
+            warning_box += "⚠️ [严重警告] 未检测到有效的验证 Cookie，Twitter/IG 混合图文极易因大厂匿名风控导致图片抓取降级为 0！\n"
+            warning_box += "⚠️ [严重警告] 请立即前往 Render 或者是您的 VPS 后台配置对应的 TWITTER_COOKIE_TEXT 或 IG_COOKIE_TEXT 环境变量！\n"
+            warning_box += "⚠️" * 40 + "\n"
+            print(warning_box)
 
         # 统一准备装载解析结果的数组
         media_list = []
@@ -120,7 +138,7 @@ async def extract_stream(request: Request):
                 for line in output_lines:
                     clean_line = line.strip()
                     if clean_line.startswith("http://") or clean_line.startswith("https://"):
-                        # 初步判断是否为视频特征扩展名
+                        # 初步通过特征扩展名分类
                         is_video_file = any(ext in clean_line.lower() for ext in [".mp4", ".m3u8", ".mov", ".webm"])
                         media_list.append({
                             "type": "video" if is_video_file else "image",
@@ -128,17 +146,16 @@ async def extract_stream(request: Request):
                         })
                 print(f"🎯 [阶段一完成] gallery-dl 搜刮到 {len(media_list)} 个基础资产节点")
             except Exception as gallery_err:
-                # 阶段一遇到异常时不中断，允许滑入阶段二兜底或由其深度捕获
                 print(f"ℹ️ [阶段一提示] gallery-dl 解析遭遇非致命异常: {gallery_err}")
 
         # ==========================================
-        # 【阶段二：高清视频重构（基因升级）(yt-dlp)】
+        # 【阶段二：精细化协同与资产无损合并 (yt-dlp)】
         # ==========================================
-        has_video = any(m["type"] == "video" for m in media_list)
-        is_major_platform = any(domain in cleaned_url.lower() for domain in ["twitter.com", "x.com", "instagram.com"])
+        has_video_clue = any(m["type"] == "video" for m in media_list)
+        is_major_platform = any(domain in cleaned_url.lower() for domain in ["twitter.com", "instagram.com"])
 
-        # 触发判定条件：①资产库为空；②库中含有视频线索；③属于大厂混合平台
-        if not media_list or has_video or is_major_platform:
+        # 触发判定条件：资产库为空、里面含有视频暗号，或是属于大厂混合平台
+        if not media_list or has_video_clue or is_major_platform:
             print(f"🔄 [阶段二] 触发重构协同判定，正在唤醒 yt-dlp 终极雷达进行高清视频捕获...")
             
             ydl_opts = {
@@ -152,70 +169,77 @@ async def extract_stream(request: Request):
                 },
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android', 'web_creator'] # 手机端欺骗伪装，穿透机房限制
+                        'player_client': ['android', 'web_creator'] # 手机端指纹欺骗防御
                     }
                 }
             }
             if current_cookie_path:
                 ydl_opts['cookiefile'] = current_cookie_path
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(cleaned_url, download=False)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(cleaned_url, download=False)
 
-            # 安全阻断过滤清洗器：强力粉碎恶意 m3u8 / manifest 切片索引文本
-            def clean_progressive_url(raw_url: str) -> str:
-                if not raw_url:
+                # 安全阻断过滤清洗器：强力粉碎恶意 m3u8 / manifest 切片索引文本
+                def clean_progressive_url(raw_url: str) -> str:
+                    if not raw_url:
+                        return ""
+                    url_check = raw_url.lower()
+                    if ".m3u8" in url_check or "manifest" in url_check:
+                        return ""
+                    return raw_url
+
+                # 从 formats 基因库里筛选出绝对纯净的单文件 mp4 真实直链
+                def resolve_pure_mp4_url(item_data) -> str:
+                    direct_url = clean_progressive_url(item_data.get('url'))
+                    if direct_url:
+                        return direct_url
+
+                    formats = item_data.get('formats', [])
+                    valid_mp4_formats = [
+                        f for f in formats
+                        if f.get('url') and f.get('ext') == 'mp4' and not any(x in f.get('url').lower() for x in ['.m3u8', 'manifest'])
+                    ]
+                    if valid_mp4_formats:
+                        combined = [f for f in valid_mp4_formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
+                        if combined:
+                            return combined[-1].get('url')
+                        return valid_mp4_formats[-1].get('url')
+
+                    any_progressive = [f for f in formats if f.get('url') and not any(x in f.get('url').lower() for x in ['.m3u8', 'manifest'])]
+                    if any_progressive:
+                        return any_progressive[-1].get('url')
                     return ""
-                url_check = raw_url.lower()
-                if ".m3u8" in url_check or "manifest" in url_check:
-                    return ""
-                return raw_url
 
-            # 深度从 formats 基因库里筛选出绝对纯净的单文件 mp4 真实直链
-            def resolve_pure_mp4_url(item_data) -> str:
-                direct_url = clean_progressive_url(item_data.get('url'))
-                if direct_url:
-                    return direct_url
-
-                formats = item_data.get('formats', [])
-                valid_mp4_formats = [
-                    f for f in formats
-                    if f.get('url') and f.get('ext') == 'mp4' and not any(x in f.get('url').lower() for x in ['.m3u8', 'manifest'])
-                ]
-                if valid_mp4_formats:
-                    combined = [f for f in valid_mp4_formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
-                    if combined:
-                        return combined[-1].get('url')
-                    return valid_mp4_formats[-1].get('url')
-
-                any_progressive = [f for f in formats if f.get('url') and not any(x in f.get('url').lower() for x in ['.m3u8', 'manifest'])]
-                if any_progressive:
-                    return any_progressive[-1].get('url')
-                return ""
-
-            # 专属提取 yt-dlp 侧重构的高清视频列表
-            yt_dlp_videos = []
-            if 'entries' in info and info['entries']:
-                for entry in info['entries']:
-                    if not entry: continue
-                    v_url = resolve_pure_mp4_url(entry)
+                # 提取 yt-dlp 侧重构的高清视频列表
+                yt_dlp_videos = []
+                if 'entries' in info and info['entries']:
+                    for entry in info['entries']:
+                        if not entry: continue
+                        v_url = resolve_pure_mp4_url(entry)
+                        if v_url:
+                            yt_dlp_videos.append({"type": "video", "url": v_url})
+                else:
+                    v_url = resolve_pure_mp4_url(info)
                     if v_url:
                         yt_dlp_videos.append({"type": "video", "url": v_url})
-            else:
-                v_url = resolve_pure_mp4_url(info)
-                if v_url:
-                    yt_dlp_videos.append({"type": "video", "url": v_url})
 
-            # 【关键替换逻辑】：如果 yt-dlp 成功捕获到了高清无损的视频直链
-            if yt_dlp_videos:
-                # 绝不动摇阶段一捞出来的 image 节点，仅精准抹除旧的 video 节点
-                media_list = [m for m in media_list if m["type"] != "video"]
-                # 将基因升级后的纯净视频直链无缝并入
-                media_list.extend(yt_dlp_videos)
-                print(f"⚡ [重构成功] 已成功用 yt-dlp 高清 MP4 节点替换了可能存在画质瑕疵的旧视频流")
+                # ------------------------------------------------------------
+                # 【逻辑核心三：精细化无损合并逻辑 - 绝不丢失图片资产】
+                # ------------------------------------------------------------
+                if yt_dlp_videos:
+                    # 保留原画：精准过滤清除 media_list 里的旧低清 video 节点，而 type 为 image 的图片节点死死留住
+                    retained_images = [m for m in media_list if m["type"] == "image"]
+                    
+                    # 重新组装：将保留下来的全部高清原图节点与 yt-dlp 抓回的高清纯净 MP4 节点无损合并
+                    media_list = retained_images + yt_dlp_videos
+                    print(f"⚡ [无损替换成功] 已成功用 yt-dlp 高清 MP4 节点覆盖替换。当前资产库中：图片节点保留 {len(retained_images)} 个，视频节点并入 {len(yt_dlp_videos)} 个")
+            
+            except Exception as ytdlp_err:
+                print(f"ℹ️ [阶段二提示] yt-dlp 解析遭遇非致命异常: {ytdlp_err}")
 
         # ==========================================
-        # 【阶段三：最终收网与去重】
+        # 【阶段三：最终收网、安全去重与 M3U8 抹除】
         # ==========================================
         seen_urls = set()
         final_media_list = []
@@ -223,7 +247,7 @@ async def extract_stream(request: Request):
             url = item["url"]
             url_lower = url.lower()
             
-            # 最后的马奇诺防线：任何渠道残留的恶意 m3u8 / manifest 链接一律不予放行
+            # 最后的马奇诺防线：任何渠道残留的恶意 m3u8 / manifest 链接一律封死不予放行
             if ".m3u8" in url_lower or "manifest" in url_lower:
                 continue
                 
@@ -232,9 +256,9 @@ async def extract_stream(request: Request):
                 final_media_list.append(item)
 
         if not final_media_list:
-            raise Exception("双引擎协同流水线均未能从该网址中提取到任何不含 m3u8 的高清实体直链地址")
+            raise Exception("双引擎串联流水线运行完毕，未能提取到任何有效的图片资产或纯净实体视频直链")
 
-        print(f"🎯 [流水线收网] 最终完美合并去重，共计输出 {len(final_media_list)} 个直链资产对象")
+        print(f"🎯 [流水线收网] 最终资产洗涤去重完成，共计输出 {len(final_media_list)} 个直链资产对象")
         
         return {
             "code": 200,
@@ -247,17 +271,16 @@ async def extract_stream(request: Request):
     except Exception as e:
         error_msg_raw = str(e)
         error_msg_lower = error_msg_raw.lower()
-        print(f"❌ 协同流水线彻底断裂，原因: {error_msg_raw}")
+        print(f"❌ 协同流水线断裂，异常详情: {error_msg_raw}")
 
-        # 高情商风控中文降级提示
         if "cookies" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。")
+            raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被大厂风控拦截，请稍后再试，或检查后端 Cookie 配置。")
         if "twitter" in error_msg_lower and "no video" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了海外公共机房 IP 匿名访问限制，请稍后重试。")
+            raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了匿名访问限制，混合多图文请务必在 Render 配置环境变量 Cookie。")
         if "instagram" in error_msg_lower and "no video" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。")
+            raise HTTPException(status_code=400, detail="🔒 Instagram 访问请求被官方安全验证墙拦截，请稍后再试或更新 Cookie。")
 
-        raise HTTPException(status_code=500, detail=f"全球流媒体开放网关直链提取失败，请检查链接可达性: {error_msg_raw}")
+        raise HTTPException(status_code=500, detail=f"流媒体直链提取失败，请检查目标链接状态: {error_msg_raw}")
     finally:
         if current_cookie_path:
             utils_safe_remove_cookie_file(current_cookie_path)
