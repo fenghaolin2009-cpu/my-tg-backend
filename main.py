@@ -136,9 +136,7 @@ async def extract_stream(request: Request):
         if not media_list or has_video_clue or is_major_platform:
             print(f"🔄 [阶段二] 触发重构协同判定，正在唤醒 yt-dlp 终极雷达进行高清视频捕获...")
             
-            # ------------------------------------------------------------
-            # 【优化控制点一：全真真机伪装客户端矩阵】
-            # ------------------------------------------------------------
+            # 全真真机伪装客户端矩阵
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
@@ -153,15 +151,21 @@ async def extract_stream(request: Request):
             }
             
             # ------------------------------------------------------------
-            # 【优化控制点二：微观无损升级 - 支持 PO_TOKEN 提权环境感知】
+            # 【核心功能升级：全量并入双子星提权指纹 po_token + visitor_data】
             # ------------------------------------------------------------
             po_token_val = os.getenv("YOUTUBE_PO_TOKEN", "")
+            visitor_data_val = os.getenv("YOUTUBE_VISITOR_DATA", "")
+            
             if po_token_val:
                 ydl_opts['extractor_args']['youtube']['po_token'] = [
                     f'web+{po_token_val}',
                     f'android+{po_token_val}'
                 ]
-                print(f"🚀 [PO_TOKEN 提权激活] 成功捕获 YOUTUBE_PO_TOKEN 环境变量，已对齐双端官方指纹注入内核")
+                print(f"🚀 [PO_TOKEN 提权激活] 成功捕获 YOUTUBE_PO_TOKEN 环境变量，已安全挂载")
+                
+            if visitor_data_val:
+                ydl_opts['extractor_args']['youtube']['visitor_data'] = visitor_data_val
+                print(f"🚀 [VISITOR_DATA 指纹对齐] 成功捕获 YOUTUBE_VISITOR_DATA 环境变量，完成密码学合拢")
             
             if current_cookie_path:
                 ydl_opts['cookiefile'] = current_cookie_path
@@ -272,7 +276,7 @@ async def extract_stream(request: Request):
         if "cookies" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被大厂风控拦截，请稍后再试，或检查后端相应平台的 Cookie 变量配置。")
         if "confirm you're not a bot" in error_msg_lower or "sign in to confirm" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🚨 YouTube 触发了最强机器人登录墙验证！请立即检查并更新 Render 后台的 YOUTUBE_COOKIE_TEXT 或者是 YOUTUBE_PO_TOKEN 环境变量。")
+            raise HTTPException(status_code=400, detail="🚨 YouTube 触发了最强机器人登录墙验证！请立即检查并更新 Render 后台的 YOUTUBE_COOKIE_TEXT、YOUTUBE_PO_TOKEN 或者是 YOUTUBE_VISITOR_DATA 环境变量。")
         if "twitter" in error_msg_lower and "no video" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了匿名访问限制，请在 VPS / Render 配置对应的验证 Cookie。")
         if "instagram" in error_msg_lower and "no video" in error_msg_lower:
@@ -349,7 +353,7 @@ def proxy_download(url: str, request: Request):
             chunk_generator(),
             status_code=response.status_code,
             media_type=content_type,
-            headers={k: str(v) for k, v in out_headers.items()}
+            headers=out_headers
         )
 
     except HTTPException:
