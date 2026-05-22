@@ -2,18 +2,18 @@
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from mangum import Mangum
 import yt_dlp
-import gallery_dl  # 🚀 引入核心包，用于全开放式路由器路由盲测
+import gallery_dl  # 引入图文开放路由盲测引擎
 from gallery_dl import config as gallery_config, job as gallery_job
 import uuid
 import os
 import re
 import zipfile
 import shutil
+import tempfile  # 智能引入跨平台临时目录库，在 Ubuntu/Render 上会自动指向 /tmp
 
-# 1. 初始化 FastAPI 应用
-app = FastAPI(title="SnapDownloader Universal Open-Router Backend")
+# 1. 初始化纯净的 FastAPI 应用（彻底移除 mangum）
+app = FastAPI(title="SnapDownloader Standard Server Backend")
 
 # 2. 开启全量 CORS 跨域配置
 app.add_middleware(
@@ -28,17 +28,17 @@ app.add_middleware(
 DOWNLOAD_CACHE = {}
 
 
-# 后台清理函数 1：图文专属阅后即焚（彻底删除临时目录和 ZIP 包，严防 AWS Lambda 爆盘）
+# 后台清理函数 1：图文专属阅后即焚（传输完毕后彻底删除临时目录和 ZIP 包，保持硬盘干净）
 def cleanup_gallery_task(directory: str, zip_file: str):
     try:
         if os.path.exists(directory):
             shutil.rmtree(directory)
-            print(f"🗑️ [Serverless 阅后即焚] 临时图集原图目录已绝对擦除: {directory}")
+            print(f"🗑️ [常规服务器 阅后即焚] 临时图集原图目录已绝对擦除: {directory}")
         if os.path.exists(zip_file):
             os.remove(zip_file)
-            print(f"🗑️ [Serverless 阅后即焚] 临时图集 ZIP 压缩包已绝对擦除: {zip_file}")
+            print(f"🗑️ [常规服务器 阅后即焚] 临时图集 ZIP 压缩包已绝对擦除: {zip_file}")
     except Exception as cleanup_err:
-        print(f"❌ [Serverless 阅后即焚] 清理图集暂存失败: {cleanup_err}")
+        print(f"❌ [常规服务器 阅后即焚] 清理图集暂存失败: {cleanup_err}")
 
 
 # 后台清理函数 2：视频专属阅后即焚
@@ -46,12 +46,12 @@ def cleanup_video_task(file_path: str):
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
-            print(f"🗑️ [Serverless 阅后即焚] 临时视频文件已绝对擦除: {file_path}")
+            print(f"🗑️ [常规服务器 阅后即焚] 临时视频文件已绝对擦除: {file_path}")
     except Exception as cleanup_err:
-        print(f"❌ [Serverless 阅后即焚] 清理视频暂存失败: {cleanup_err}")
+        print(f"❌ [常规服务器 阅后即焚] 清理视频暂存失败: {cleanup_err}")
 
 
-# 工具函数 1：正则表达式清洗过滤文本口令（捞出首个包含 http/https 的文本块）
+# 工具函数 1：正则表达式清洗过滤文本口令（捞出首个包含 http/https 的纯网址）
 def utils_extract_clean_url(dirty_text: str) -> str:
     match = re.search(r"https?://[^\s]+", dirty_text)
     if match:
@@ -70,8 +70,9 @@ def utils_create_temp_cookie_file(url: str) -> str:
         
     if cookie_text.strip():
         try:
+            temp_dir = tempfile.gettempdir()
             cookie_filename = f"cookie_auth_{uuid.uuid4()}.txt"
-            cookie_path = os.path.join("/tmp", cookie_filename)
+            cookie_path = os.path.join(temp_dir, cookie_filename)
             with open(cookie_path, "w", encoding="utf-8") as f:
                 f.write(cookie_text.strip())
             return cookie_path
@@ -96,7 +97,7 @@ def utils_safe_remove_cookie_file(cookie_path: str):
 async def health_check():
     return {
         "status": "ok", 
-        "message": "全球全能流媒体全开放路由盲测分流服务已全面就绪",
+        "message": "标准独享服务器通用流媒体盲测分流服务正常运行中...",
         "active_tasks": len(DOWNLOAD_CACHE)
     }
 
@@ -115,7 +116,7 @@ async def extract_stream(request: Request):
         
         cleaned_url = utils_extract_clean_url(dirty_input)
         
-        # 🚀 【核心优化点 1：大门全开】取消具体域名限制，只要是常规 http/https 协议网址全部予以接纳放行
+        # 大门全开验证
         if not cleaned_url or not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
             raise HTTPException(status_code=400, detail="未检测到合法的 http:// 或 https:// 视频或图集链接")
             
@@ -130,23 +131,21 @@ async def extract_stream(request: Request):
         cover = "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=500"
         size_str = "高清原流"
         
-        # 🚀 【核心优化点 2：双引擎智能盲测分流】
+        # 双引擎智能盲测分流逻辑
         try:
-            # Step 2a: 盲测第一步，默认扔给 gallery-dl 的底层引擎寻找匹配的图集抓取类
+            # Step A: 优先使用 gallery-dl 底层引擎探测是否属于其原生识别的图集
             extractor = gallery_dl.extractor.find(cleaned_url)
             if extractor is None:
-                # 如果 gallery-dl 核心组件不认识此域名，主动抛出异常，逼迫其流向 except 块
                 raise ValueError("gallery-dl 盲测未匹配，该平台不属于其原生图文写真提取范围")
             
-            # gallery-dl 盲测成功，说明该平台属于它原生支持的高清图文/照片墙帖子
             task_type = "image"
             title = f"📸 专属全能高清图文图集 ({cleaned_url.split('//')[-1].split('/')[0]})"
             size_str = "图文图集"
-            print(f"🎯 [盲测分流大成功] gallery-dl 完美拦截此 URL，系统自动挂载为【纯图文/照片墙】序列")
+            print(f"🎯 [盲测分流] gallery-dl 匹配成功，系统挂载为【纯图文/照片墙】序列")
             
         except Exception as gallery_err:
-            # Step 2b: gallery-dl 识别失败或抛出异常，立刻就地转交给 yt-dlp 视频大厂引擎接管
-            print(f"ℹ️ gallery-dl 探测未通过，全自动流向二次防御网：yt-dlp 视频流引擎。原因: {gallery_err}")
+            # Step B: gallery-dl 识别失败，平滑向二次防御网：yt-dlp 视频大厂引擎接管
+            print(f"ℹ️ gallery-dl 探测未通过，转交 yt-dlp 视频流引擎。原因: {gallery_err}")
             
             ydl_opts = {
                 'quiet': True,
@@ -160,7 +159,6 @@ async def extract_stream(request: Request):
             if current_cookie_path:
                 ydl_opts['cookiefile'] = current_cookie_path
                 
-            # 执行二次提取，如果这里再次报错，将直接震碎内部 try 块，坠入外部的大厂风控捕获逻辑中
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(cleaned_url, download=False)
                 title = info.get('title', title)
@@ -171,29 +169,27 @@ async def extract_stream(request: Request):
                 if filesize:
                     size_str = f"{filesize / (1024 * 1024):.1f} MB"
                 
-                # 针对部分综合平台的特殊情况（如 yt-dlp 把多图帖子识别为 playlist 或无直接 url 的特殊流）
+                # 特殊 playlist 或纯图集微调判定
                 if info.get('entries') or info.get('_type') == 'playlist' or (not info.get('url') and not any(f.get('vcodec') != 'none' for f in info.get('formats', []))):
                     task_type = "image"
                     size_str = "图文图集"
-                    print(f"🔄 [动态微调] yt-dlp 二次指纹特征识别其为播放列表或纯图集，数据类型安全重置为【image】")
+                    print(f"🔄 [动态微调] yt-dlp 指纹特征识别其为播放列表或纯图集，重置为【image】")
                 else:
                     task_type = "video"
-                    print(f"🎯 [盲测分流大成功] yt-dlp 视频引擎完美拦截此 URL，系统自动挂载为【无损视频原流】序列")
+                    print(f"🎯 [盲测分流] yt-dlp 识别成功，系统挂载为【无损视频原流】序列")
 
-        # 5. 登记缓存任务（此时不管是哪个引擎接管的，original_url 都是完美清洗干净的纯网址）
+        # 登记缓存任务
         task_id = str(uuid.uuid4())[:12]
         DOWNLOAD_CACHE[task_id] = {
             "original_url": cleaned_url,
             "type": task_type
         }
         
-        print(f"🔑 路由分流归档完毕！全局注册任务 ID: {task_id}，流媒体形态: {task_type}")
+        print(f"🔑 全局注册任务 ID: {task_id}，流媒体形态: {task_type}")
         
-        # 动态组装指向云函数当前路由的动态网关直链
         base_url = str(request.base_url).rstrip('/')
         proxy_download_url = f"{base_url}/api/v1/download?id={task_id}"
         
-        # 完美适配并返回你前端所需的纯净 JSON 格式
         return {
           "type": task_type,
           "title": title,
@@ -211,18 +207,17 @@ async def extract_stream(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        # 🚀 【核心优化点 3：全链路风控平替网关】
-        # 只要双引擎盲测链条彻底断裂崩溃，便会在此集中触发对各大国际/国内平台的机房 IP 优雅中文拦截
+        # 全链路高情商大厂风控优雅报错拦截（大小写不敏感匹配）
         error_msg_raw = str(e)
         error_msg_lower = error_msg_raw.lower()
-        print(f"❌ 盲测链条双重崩溃，风控感知层截获原因: {error_msg_raw}")
+        print(f"❌ 盲测崩溃，风控层截获原因: {error_msg_raw}")
         
         if "cookies" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。")
         if "twitter" in error_msg_lower and "no video" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了海外公共机房 IP 匿名访问限制，请稍后重试。")
         if "instagram" in error_msg_lower and "no video" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。")
+            raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试.")
             
         raise HTTPException(status_code=500, detail=f"全球流媒体网关未能识别或成功嗅探此网址，请检查链接公开可访问性: {error_msg_raw}")
     finally:
@@ -230,7 +225,7 @@ async def extract_stream(request: Request):
             utils_safe_remove_cookie_file(current_cookie_path)
 
 
-# 5. 云函数同步中转下载落盘接口（完美复用双引擎，自带严格的分身复用 Warm Start 盘符爆炸清理保护）
+# 5. 标准常规服务器同步中转下载落盘接口
 @app.get("/api/v1/download")
 def proxy_download(id: str, background_tasks: BackgroundTasks):
     if not id or id not in DOWNLOAD_CACHE:
@@ -240,14 +235,14 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
     original_url = task_info["original_url"]
     task_type = task_info["type"]
     
-    print(f"🚀 [Lambda 物理隔离落盘启动] 目标流: {original_url}，数据形态: {task_type}")
+    print(f"🚀 [标准落盘启动] 目标流: {original_url}，数据形态: {task_type}")
     current_cookie_path = utils_create_temp_cookie_file(original_url)
+    temp_dir = tempfile.gettempdir()  # 在 Linux/Render 上自动获取并指向 /tmp 目录
     
     # ---------------- 📸 分支 A：纯图文/照片墙处理流 (gallery-dl) ----------------
     if task_type == "image":
-        # 强行在 Lambda 的 /tmp 目录下建立专享随机子文件夹隔离层，防止高并发容器复用时文件串流
-        task_dir = os.path.join("/tmp", f"gallery_{id}")
-        zip_path = os.path.join("/tmp", f"images_{id}.zip")
+        task_dir = os.path.join(temp_dir, f"gallery_{id}")
+        zip_path = os.path.join(temp_dir, f"images_{id}.zip")
         os.makedirs(task_dir, exist_ok=True)
         
         try:
@@ -256,10 +251,10 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
             if current_cookie_path:
                 gallery_config.set(("extractor",), "cookies", current_cookie_path)
                 
-            print(f"📥 gallery-dl 全开放探测器正式落盘执行图片拉取...")
+            print(f"📥 gallery-dl 落盘执行图片拉取...")
             gallery_job.DownloadJob(original_url).run()
             
-            # 使用 zipfile 模块将落盘的多张高清原图全自动归档压缩
+            # 使用 zipfile 压缩归丁
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 has_files = False
                 for root, dirs, files in os.walk(task_dir):
@@ -270,11 +265,11 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
                         zipf.write(file_full_path, arcname)
                         
             if not has_files or not os.path.exists(zip_path) or os.path.getsize(zip_path) == 0:
-                raise Exception("gallery-dl 开放提取引擎未能在此页面成功剥离出图片并写成实体")
+                raise Exception("gallery-dl 开放提取引擎未能在此页面成功剥离出图片")
                 
-            print(f"🟢 云端图集打包压缩大成功！ZIP 大小: {os.path.getsize(zip_path)/(1024*1024):.2f} MB")
+            print(f"🟢 服务器图集打包压缩成功！ZIP 大小: {os.path.getsize(zip_path)/(1024*1024):.2f} MB")
             
-            # 🚀 【Serverless 核心：盘符防爆安全网】下发给前端的瞬间，立刻在后台清空当前分身的隔离目录与 ZIP
+            # 注册“阅后即焚”后台任务，传输完毕后由 FastAPI 自动在后台擦除
             background_tasks.add_task(cleanup_gallery_task, task_dir, zip_path)
             
             return FileResponse(
@@ -284,23 +279,22 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
             )
             
         except Exception as e:
-            cleanup_gallery_task(task_dir, zip_path)  # 发生故障就地物理扬灰，绝不霸占盘符空间
+            cleanup_gallery_task(task_dir, zip_path)  # 出错立即清空残渣
             error_msg_raw = str(e)
             error_msg_lower = error_msg_raw.lower()
             if "cookies" in error_msg_lower:
                 raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被平台风控拦截，请稍后再试或更换其他平台链接（如 TikTok/B站）。")
-            raise HTTPException(status_code=500, detail=f"云端开放图集打包暂存失败: {error_msg_raw}")
+            raise HTTPException(status_code=500, detail=f"图集打包暂存失败: {error_msg_raw}")
         finally:
             if current_cookie_path:
                 utils_safe_remove_cookie_file(current_cookie_path)
 
     # ---------------- 📹 分支 B：流媒体视频处理流 (yt-dlp) ----------------
     else:
-        file_path = os.path.join("/tmp", f"snap_{id}.mp4")
+        file_path = os.path.join(temp_dir, f"snap_{id}.mp4")
         ydl_opts = {
             'outtmpl': file_path,
-            # 强行限定免登录基础兼容 MP4 单格式封装，打通在无 ffmpeg 的基础 Lambda 纯净容器中的直接落盘通过率
-            'format': 'best[ext=mp4]/best/mp4',         
+            'format': 'best[ext=mp4]/best/mp4',  # 免登录基础兼容 MP4 独立单格式封装，确保高通过率
             'quiet': True,
             'no_warnings': True,
             'http_headers': {
@@ -315,11 +309,11 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
                 ydl.download([original_url])
                 
             if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-                raise Exception("yt-dlp 开放下载引擎未能成功在 AWS Lambda 本地生成视频实体")
+                raise Exception("yt-dlp 下载引擎未能成功在服务器生成视频实体")
                 
-            print(f"🟢 云端视频实体落盘成功！暂存路径: {file_path}")
+            print(f"🟢 服务器视频实体落盘成功！暂存路径: {file_path}")
             
-            # 🚀 【Serverless 核心：盘符防爆安全网】下发完立刻通过线程管道彻底抹除物理痕迹
+            # 注册“阅后即焚”后台视频清理任务
             background_tasks.add_task(cleanup_video_task, file_path)
             
             return FileResponse(
@@ -342,12 +336,7 @@ def proxy_download(id: str, background_tasks: BackgroundTasks):
             if "instagram" in error_msg_lower and "no video" in error_msg_lower:
                 raise HTTPException(status_code=400, detail="🔒 本次 Instagram 访问请求被官方安全验证拦截，请更换其他链接或稍后再试。")
                 
-            raise HTTPException(status_code=500, detail=f"云端开放视频落盘暂存失败: {error_msg_raw}")
+            raise HTTPException(status_code=500, detail=f"视频落盘暂存失败: {error_msg_raw}")
         finally:
             if current_cookie_path:
                 utils_safe_remove_cookie_file(current_cookie_path)
-
-
-# 6. 🚀 【AWS Lambda 独家分身入口】
-# 完美映射接管整个全开放路由的 FastAPI 路由树，作为 Serverless 容器环境中唯一的主 Handler 触发器
-handler = Mangum(app)
