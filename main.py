@@ -137,7 +137,7 @@ async def extract_stream(request: Request):
             print(f"🔄 [阶段二] 触发重构协同判定，正在唤醒 yt-dlp 终极雷达进行高清视频捕获...")
             
             # ------------------------------------------------------------
-            # 【重构控制点一：彻底解绑全局 User-Agent，激活真机原生指纹对齐】
+            # 【优化控制点一：全真真机伪装客户端矩阵】
             # ------------------------------------------------------------
             ydl_opts = {
                 'quiet': True,
@@ -145,13 +145,23 @@ async def extract_stream(request: Request):
                 'skip_download': True,
                 'extract_flat': False,
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                # 剔除了强制注入的 Desktop 级 http_headers，允许引擎根据客户端数组自动指纹闭环
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['android', 'ios', 'web_creator', 'mweb', 'tv']
                     }
                 }
             }
+            
+            # ------------------------------------------------------------
+            # 【优化控制点二：微观无损升级 - 支持 PO_TOKEN 提权环境感知】
+            # ------------------------------------------------------------
+            po_token_val = os.getenv("YOUTUBE_PO_TOKEN", "")
+            if po_token_val:
+                ydl_opts['extractor_args']['youtube']['po_token'] = [
+                    f'web+{po_token_val}',
+                    f'android+{po_token_val}'
+                ]
+                print(f"🚀 [PO_TOKEN 提权激活] 成功捕获 YOUTUBE_PO_TOKEN 环境变量，已对齐双端官方指纹注入内核")
             
             if current_cookie_path:
                 ydl_opts['cookiefile'] = current_cookie_path
@@ -218,9 +228,7 @@ async def extract_stream(request: Request):
                       f"雷达捞回大图 {len(yt_dlp_images)} 个，合并并入高清纯净视频 {len(yt_dlp_videos)} 个")
             
             except Exception as ytdlp_err:
-                # ------------------------------------------------------------
-                # 【完美保留：大厂强力登录墙异常强透传抛出机制】
-                # ------------------------------------------------------------
+                # 【完美保留】：大厂强力登录墙异常强透传抛出机制
                 err_msg_str = str(ytdlp_err).lower()
                 if "confirm you're not a bot" in err_msg_str or "sign in to confirm" in err_msg_str:
                     print(f"🚨 [风控阻断] yt-dlp 触发大厂强力机器人登录墙验证，立即强制向外层顶级捕获器进行 raise 抛出！")
@@ -264,7 +272,7 @@ async def extract_stream(request: Request):
         if "cookies" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🚨 当前海外服务器 IP 被大厂风控拦截，请稍后再试，或检查后端相应平台的 Cookie 变量配置。")
         if "confirm you're not a bot" in error_msg_lower or "sign in to confirm" in error_msg_lower:
-            raise HTTPException(status_code=400, detail="🚨 YouTube 触发了最强机器人登录墙验证！请立即检查并更新 Render 后台的 YOUTUBE_COOKIE_TEXT 环境变量。")
+            raise HTTPException(status_code=400, detail="🚨 YouTube 触发了最强机器人登录墙验证！请立即检查并更新 Render 后台的 YOUTUBE_COOKIE_TEXT 或者是 YOUTUBE_PO_TOKEN 环境变量。")
         if "twitter" in error_msg_lower and "no video" in error_msg_lower:
             raise HTTPException(status_code=400, detail="🔒 推特 (X) 官方触发了匿名访问限制，请在 VPS / Render 配置对应的验证 Cookie。")
         if "instagram" in error_msg_lower and "no video" in error_msg_lower:
@@ -341,7 +349,7 @@ def proxy_download(url: str, request: Request):
             chunk_generator(),
             status_code=response.status_code,
             media_type=content_type,
-            headers=out_headers
+            headers={k: str(v) for k, v in out_headers.items()}
         )
 
     except HTTPException:
