@@ -29,7 +29,8 @@ REFERER_MAPPING: Dict[str, str] = {
     "instagram.com": "https://www.instagram.com/",
     "twitter.com": "https://x.com/",
     "x.com": "https://x.com/",
-    "twimg.com": "https://x.com/"
+    "twimg.com": "https://x.com/",
+    "snapchat.com": "https://www.snapchat.com/"
 }
 
 # --- 模块顶级作用域工具函数 ---
@@ -151,11 +152,13 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
         current_cookie_path = utils_create_temp_cookie_file(cleaned_url)
         media_list: List[Dict[str, str]] = []
         is_youtube = any(yt_domain in cleaned_url.lower() for yt_domain in ["youtube.com", "youtu.be"])
+        is_snapchat = "snapchat.com" in cleaned_url.lower()
 
         # ============================================================
         # 【阶段一：资产初筛搜刮 (异步非阻塞子进程管道通信)】
         # ============================================================
-        if not is_youtube:
+        # Snapchat 专项规则：跳过阶段一初筛，直接进入阶段二专属线程池解析
+        if not is_youtube and not is_snapchat:
             try:
                 cmd = ["gallery-dl", "-g", cleaned_url]
                 if current_cookie_path:
@@ -191,7 +194,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
         # 【阶段二：高清视频重构升级与资产无损交叉合并 (yt-dlp)】
         # ============================================================
         has_video_clue = any(m["type"] == "video" for m in media_list)
-        is_major_platform = is_youtube or any(domain in cleaned_url.lower() for domain in ["twitter.com", "instagram.com"])
+        is_major_platform = is_youtube or is_snapchat or any(domain in cleaned_url.lower() for domain in ["twitter.com", "instagram.com"])
 
         if not media_list or has_video_clue or is_major_platform:
             print(f"🔄 [阶段二] 触发重构协同判定，启动隔离线程池调度 yt-dlp 雷达...")
@@ -215,11 +218,19 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
                 seen_yt_imgs = set()
                 yt_dlp_videos: List[Dict[str, str]] = []
                 
+                # Snapchat 专项补丁：精准捕获顶级 info/entry 字典中的封面图资源，消除死黑痛点
+                if (global_thumb := info.get("thumbnail")) and isinstance(global_thumb, str):
+                    if global_thumb.startswith(("http://", "https://")):
+                        yt_dlp_images.append({"type": "image", "url": global_thumb})
+
                 if 'entries' in info and info['entries']:
                     for entry in info['entries']:
                         if entry:
                             if v_url := resolve_pure_mp4_url(entry): yt_dlp_videos.append({"type": "video", "url": v_url})
                             collect_thumbnails_safe(entry, media_list, yt_dlp_images, seen_yt_imgs)
+                            if (entry_thumb := entry.get("thumbnail")) and isinstance(entry_thumb, str):
+                                if entry_thumb.startswith(("http://", "https://")):
+                                    yt_dlp_images.append({"type": "image", "url": entry_thumb})
                 else:
                     if v_url := resolve_pure_mp4_url(info): yt_dlp_videos.append({"type": "video", "url": v_url})
                     collect_thumbnails_safe(info, media_list, yt_dlp_images, seen_yt_imgs)
@@ -229,7 +240,7 @@ async def extract_stream(request: Request) -> Dict[str, Any]:
                 gallery_videos = [m for m in media_list if m["type"] == "video"]
                 final_videos = yt_dlp_videos if yt_dlp_videos else gallery_videos
                 media_list = retained_images + yt_dlp_images + final_videos
-                print(f"⚡ [无损智能拼装] 留存大图 {len(retained_images)} 个，雷达大图 {len(yt_dlp_images)} 个，合并视频 {len(final_videos)} 个")
+                print(f"⚡ [无损智能拼装] 留存大图 {len(retained_images)} 个，雷达大图 {len(yt_dlp_images)} 个定位，合并视频 {len(final_videos)} 个")
             
             except Exception as ytdlp_err:
                 err_msg_str = str(ytdlp_err).lower()
@@ -307,7 +318,7 @@ async def proxy_download(url: str, request: Request, background_tasks: Backgroun
     client: httpx.AsyncClient = request.app.state.client
     response: Optional[httpx.Response] = None
     try:
-        # 修正参数位置：将 timeout 显式移至 build_request 内部，消除 send 阶段的 TypeError
+        # 建立网络长连接，配置统一的请求级超时机制
         req = client.build_request("GET", url, headers=headers, timeout=30.0)
         response = await client.send(req, stream=True)
 
